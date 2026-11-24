@@ -473,56 +473,54 @@ class GameSession {
     return 1;
   }
 
-  questionStartPayload(
-    elapsedMs = 0
-  ) {
+  questionStartPayload(elapsedMs = 0) {
     const q = this.current;
+
+    let remainingMs = null;
+
+    if (this.freeAnswerPhase === 'paused') {
+      // При паузе возвращаем сохранённый остаток.
+      remainingMs = this.freeAnswerRemainingMs;
+    } else if (this.freeAnswerPhase === 'active') {
+      // При активной фазе вычисляем реальное оставшееся время.
+      remainingMs = Math.max(
+        0,
+        this.freeAnswerPhaseLimit * 1000 - elapsedMs
+      );
+    } else if (this.freeAnswerPhase === 'recording') {
+      // Клиент видит только 10 секунд.
+      // Дополнительные 3 секунды остаются невидимыми.
+      remainingMs = Math.max(
+        0,
+        FREE_ANSWER_RECORDING_SECONDS * 1000 - elapsedMs
+      );
+    }
 
     return {
       index: this.idx,
 
-      qNum:
-        this.idx + 1,
-
-      total:
-        this.order.length,
+      qNum: this.idx + 1,
+      total: this.order.length,
 
       freeAnswer: true,
 
-      roundNumber:
-        q?.roundNumber,
+      roundNumber: q?.roundNumber,
+      questionNumber: q?.questionNumber,
+      type: q?.type,
 
-      questionNumber:
-        q?.questionNumber,
+      timeLimit: this.qLimit,
 
-      type:
-        q?.type,
-
-      timeLimit:
-        this.qLimit,
-
-      serverStartTime:
-        this.qStart,
-
+      serverStartTime: this.qStart,
       elapsedMs,
 
-      phase:
-        this.freeAnswerPhase,
+      phase: this.freeAnswerPhase,
+      subQuestion: this.freeAnswerSubQuestion,
 
-      subQuestion:
-        this.freeAnswerSubQuestion,
+      phaseTimeLimit: this.freeAnswerPhaseLimit,
+      phaseStartTime: this.freeAnswerPhaseStart,
 
-      phaseTimeLimit:
-        this.freeAnswerPhaseLimit,
-
-      phaseStartTime:
-        this.freeAnswerPhaseStart,
-
-      pauseReason:
-        this.freeAnswerPauseReason,
-
-      remainingMs:
-        this.freeAnswerRemainingMs
+      pauseReason: this.freeAnswerPauseReason,
+      remainingMs
     };
   }
 
@@ -779,56 +777,39 @@ class GameSession {
 
   resumeFreeAnswer() {
     if (
-      this.state !==
-      'QUESTION_ACTIVE'
+      this.state !== 'QUESTION_ACTIVE' ||
+      this.freeAnswerPhase !== 'paused'
     ) {
       return false;
     }
 
-    if (
-      this.freeAnswerPhase !==
-      'paused'
-    ) {
-      return false;
-    }
-
-    const maxSubQuestions =
-      this.getSubQuestionCount();
+    const maxSubQuestions = this.getSubQuestionCount();
 
     if (
       this.freeAnswerPauseReason ===
       'between-subquestions'
     ) {
+      // Автоматическая пауза между частями duplet/blitz:
+      // переходим к следующей части с полным временем.
       const nextSubQuestion =
         this.freeAnswerSubQuestion + 1;
 
-      if (
-        nextSubQuestion >
-        maxSubQuestions
-      ) {
+      if (nextSubQuestion > maxSubQuestions) {
         return this.finishFreeAnswerActive();
       }
 
-      this.freeAnswerSubQuestion =
-        nextSubQuestion;
+      this.freeAnswerSubQuestion = nextSubQuestion;
 
       this.freeAnswerPhaseLimit =
         this.getActivePhaseLimit();
     } else {
-      /*
-       * Manual pause:
-       * resume the same subquestion and preserve
-       * the time that remained when it was paused.
-       */
+      // Ручная пауза:
+      // продолжаем ту же часть с сохранённого остатка.
       const remainingMs =
         this.freeAnswerRemainingMs ??
         this.getActivePhaseLimit() * 1000;
 
       if (remainingMs <= 0) {
-        /*
-         * Defensive fallback. A manual pause should
-         * normally have positive remaining time.
-         */
         if (
           this.freeAnswerSubQuestion <
           maxSubQuestions
@@ -848,14 +829,15 @@ class GameSession {
         remainingMs / 1000;
     }
 
-    this.freeAnswerPhase =
-      'active';
+    this.freeAnswerPhase = 'active';
 
-    this.freeAnswerPhaseStart =
-      Date.now();
+    this.freeAnswerPhaseStart = Date.now();
 
     this.freeAnswerPauseReason = null;
     this.freeAnswerRemainingMs = null;
+
+    const remainingMs =
+      this.freeAnswerPhaseLimit * 1000;
 
     this.bus.freeAnswerPhase({
       phase: 'active',
@@ -866,8 +848,7 @@ class GameSession {
       timeLimit:
         this.freeAnswerPhaseLimit,
 
-      remainingMs:
-        this.freeAnswerPhaseLimit * 1000,
+      remainingMs,
 
       serverStartTime:
         this.freeAnswerPhaseStart

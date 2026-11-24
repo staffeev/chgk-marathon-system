@@ -122,8 +122,6 @@ const io = new Server(server);
 
 // ---- game session, wired to Socket.IO through a small bus ----
 
-// ---- game session, wired to Socket.IO through a small bus ----
-
 let pushAdminSoon = null;
 
 function pushAdmins() {
@@ -372,6 +370,21 @@ io.on('connection', socket => {
     socket.emit(
       'resumed',
       session.playerSnapshot(p)
+    );
+  });
+
+  // Update the player's draft without submitting or locking the answer.
+  on('updateFreeAnswerDraft', data => {
+    data = obj(data);
+
+    const p = [...session.players.values()]
+      .find(x => x.socketId === socket.id);
+
+    if (!p) return;
+
+    session.updateFreeAnswerDraft(
+      p.token,
+      data.answer
     );
   });
 

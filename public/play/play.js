@@ -82,7 +82,7 @@ let freeAnswerRecording = false;
 let freeAnswerPaused = false;
 let freeAnswerDraft = '';
 
-let recordingSyncTimer = null;
+let draftSyncTimer = null;
 
 const countdown = createCountdown(({ whole, fraction, low }) => {
   $('q-timer').textContent = 'T-' + pad(whole, 3);
@@ -102,23 +102,31 @@ const countdown = createCountdown(({ whole, fraction, low }) => {
 
 // ---- free answer helpers ----
 
-function cancelRecordingSync() {
-  if (recordingSyncTimer !== null) {
-    clearTimeout(recordingSyncTimer);
-    recordingSyncTimer = null;
+function cancelDraftSync() {
+  if (draftSyncTimer !== null) {
+    clearTimeout(draftSyncTimer);
+    draftSyncTimer = null;
   }
 }
 
-function syncFreeAnswerDraft() {
-  cancelRecordingSync();
+function canEditFreeAnswer() {
+  return (
+    !!question &&
+    !freeAnswerLocked &&
+    !freeAnswerPaused &&
+    (
+      !freeAnswerRecording ||
+      freeAnswerRecording
+    )
+  );
+}
 
-  if (
-    !question ||
-    !freeAnswerRecording ||
-    freeAnswerPaused
-  ) {
-    return;
-  }
+// Send the current textarea contents to the server as a draft.
+// This does not submit or lock the answer.
+function syncFreeAnswerDraft() {
+  cancelDraftSync();
+
+  if (!canEditFreeAnswer()) return;
 
   const input = $('q-answer');
 
@@ -126,31 +134,25 @@ function syncFreeAnswerDraft() {
 
   freeAnswerDraft = input.value;
 
-  socket.emit('submitFreeAnswer', {
+  socket.emit('updateFreeAnswerDraft', {
     answer: freeAnswerDraft
   });
 }
 
-function scheduleRecordingSync() {
-  if (
-    !question ||
-    !freeAnswerRecording ||
-    freeAnswerPaused
-  ) {
-    return;
-  }
+function scheduleDraftSync() {
+  if (!canEditFreeAnswer()) return;
 
-  cancelRecordingSync();
+  cancelDraftSync();
 
-  // Avoid sending a socket event for every keystroke.
-  recordingSyncTimer = setTimeout(() => {
-    recordingSyncTimer = null;
+  // Debounce draft updates to avoid emitting on every keystroke.
+  draftSyncTimer = setTimeout(() => {
+    draftSyncTimer = null;
     syncFreeAnswerDraft();
   }, 200);
 }
 
 function resetFreeAnswerState() {
-  cancelRecordingSync();
+  cancelDraftSync();
 
   freeAnswerLocked = false;
   freeAnswerRecording = false;
@@ -172,7 +174,10 @@ function startQuestionCountdown(payload = {}) {
     return;
   }
 
-  const remainingMs = Number(payload.remainingMs);
+  const remainingMs =
+  payload.remainingMs == null
+    ? NaN
+    : Number(payload.remainingMs);
 
   if (
     Number.isFinite(remainingMs) &&
@@ -314,7 +319,7 @@ socket.on('disconnect', reason => {
   }
 
   // Do not keep a stale debounce timer across a disconnect.
-  cancelRecordingSync();
+  cancelDraftSync();
 });
 
 socket.on('resumed', snap => {
@@ -484,18 +489,12 @@ function renderQuestion(payload = {}) {
 
   input.oninput = () => {
     freeAnswerDraft = input.value;
-
-    if (freeAnswerRecording && !freeAnswerPaused) {
-      scheduleRecordingSync();
-    }
+    scheduleDraftSync();
   };
 
-  // If the player leaves the field before the debounce fires,
-  // send the latest text immediately.
+  // Save the latest text immediately when the player leaves the field.
   input.onblur = () => {
-    if (freeAnswerRecording && !freeAnswerPaused) {
-      syncFreeAnswerDraft();
-    }
+    syncFreeAnswerDraft();
   };
 
   button.onclick = submitFreeAnswer;
@@ -512,15 +511,20 @@ function renderQuestion(payload = {}) {
 }
 
 function submitFreeAnswer() {
-  if (!question || freeAnswerPaused) return;
-
-  const input = $('q-answer');
-
-  if (!input || (freeAnswerLocked && !freeAnswerRecording)) {
+  if (
+    !question ||
+    freeAnswerPaused ||
+    freeAnswerLocked ||
+    freeAnswerRecording
+  ) {
     return;
   }
 
-  cancelRecordingSync();
+  cancelDraftSync();
+
+  const input = $('q-answer');
+
+  if (!input) return;
 
   freeAnswerDraft = input.value;
 
@@ -528,10 +532,9 @@ function submitFreeAnswer() {
     answer: freeAnswerDraft
   });
 
-  if (!freeAnswerRecording) {
-    freeAnswerLocked = true;
-    SFX.play('blip');
-  }
+  freeAnswerLocked = true;
+
+  SFX.play('blip');
 
   updateFreeAnswerUI();
 }
@@ -557,11 +560,19 @@ function updateFreeAnswerUI() {
   }
 
   if (freeAnswerRecording) {
-    input.disabled = false;
-    button.disabled = false;
-
     phaseLabel.hidden = false;
-    status.textContent = 'ЗАПИСЬ ОТВЕТА';
+
+    if (freeAnswerLocked) {
+      input.disabled = true;
+      button.disabled = true;
+
+      status.textContent = 'ОТВЕТ ЗАФИКСИРОВАН';
+    } else {
+      input.disabled = false;
+      button.disabled = true;
+
+      status.textContent = 'ЗАПИСЬ ОТВЕТА';
+    }
 
     $('q-warning').hidden = true;
     return;
@@ -589,7 +600,7 @@ socket.on('freeAnswerPhase', payload => {
   if (!question || !payload) return;
 
   if (payload.phase === 'paused') {
-    cancelRecordingSync();
+    cancelDraftSync();
 
     freeAnswerPaused = true;
     freeAnswerRecording = false;
@@ -603,7 +614,7 @@ socket.on('freeAnswerPhase', payload => {
   }
 
   if (payload.phase === 'active') {
-    cancelRecordingSync();
+    cancelDraftSync();
 
     freeAnswerPaused = false;
     freeAnswerRecording = false;
@@ -629,15 +640,17 @@ socket.on('freeAnswerPhase', payload => {
   }
 
   if (payload.phase === 'recording') {
-    cancelRecordingSync();
+    cancelDraftSync();
 
     freeAnswerPaused = false;
     freeAnswerRecording = true;
-    freeAnswerLocked = false;
 
+    // Do not unlock an answer that was already submitted.
+    // Only players without a submitted answer may edit their draft.
     question.phase = 'recording';
 
     updateFreeAnswerUI();
+
     startQuestionCountdown({
       ...payload,
       timeLimit: payload.timeLimit ?? 10
@@ -647,15 +660,15 @@ socket.on('freeAnswerPhase', payload => {
 
 // The server confirms that the submitted answer was received.
 socket.on('answerAck', payload => {
-  if (freeAnswerRecording) {
-    $('q-status').textContent = 'ОТВЕТ ОТПРАВЛЕН';
-  } else if (freeAnswerLocked) {
+  if (freeAnswerLocked) {
     $('q-status').textContent = 'ОТВЕТ ЗАФИКСИРОВАН';
+  } else if (freeAnswerRecording) {
+    $('q-status').textContent = 'ЗАПИСЬ ОТВЕТА';
   }
 });
 
 socket.on('questionEnd', () => {
-  cancelRecordingSync();
+  cancelDraftSync();
   countdown.stop();
 
   $('q-answer').disabled = true;
