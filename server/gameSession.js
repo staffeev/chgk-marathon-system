@@ -602,6 +602,7 @@ class GameSession {
     this.clearAuto();
     const { ranks } = rankPlayers(this.connected());
     this.deltas = new Map();
+    this.freeAnswerResults = new Map();
     for (const p of this.connected()) {
       const prev = this.prevRanks ? this.prevRanks.get(p.token) : null;
       this.deltas.set(p.token, prev ? prev - ranks.get(p.token) : null);
@@ -709,6 +710,8 @@ class GameSession {
     return {
       state: this.state,
       pin: this.pin,
+      mode: this.mode,
+      freeAnswerGame: this.freeAnswerGame,
       qNum: this.idx + 1,
       qTotal: this.order.length,
       players: [...this.players.values()]

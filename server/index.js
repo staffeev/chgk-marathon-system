@@ -220,6 +220,23 @@ io.on('connection', socket => {
   on('host:freeAnswerResume', asAdmin(() => {
     session.resumeFreeAnswer();
   }));
+  on('host:configureFreeAnswer', asAdmin(data => {
+    const rounds = Array.isArray(data.rounds) ? data.rounds : [];
+
+    if (!session.configureFreeAnswerGame(rounds)) {
+      return;
+    }
+
+    pushAdmins();
+  }));
+
+  on('host:clearFreeAnswer', asAdmin(() => {
+    if (!session.clearFreeAnswerGame()) {
+      return;
+    }
+
+    pushAdmins();
+  }));
   on('host:start', asAdmin(() => session.start()));
   on('host:next', asAdmin(() => session.next()));
   on('host:showLeaderboard', asAdmin(() => session.showLeaderboard()));

@@ -13,6 +13,7 @@ const socket = ADMIN_KEY ? io({ auth: { token: ADMIN_KEY } }) : io();
 let sync = null;       // last admin:sync payload
 let settings = null;   // last known settings
 let bank = [];         // question list from GET /api/questions
+let freeRounds = [];
 
 // TIME_MIN / TIME_MAX come from /shared/common.js.
 const IMAGE_TYPES = /^image\/(png|jpe?g|webp|gif)$/;
@@ -51,6 +52,7 @@ socket.on('admin:sync', s => {
   renderSession();
   renderSettings();
   renderBankTitle();
+  renderFreeAnswerSetup();
 });
 
 // ---- session control ----
@@ -69,15 +71,126 @@ function renderSession() {
   renderPlayers();
 }
 
+function renderFreeAnswerSetup() {
+  const mode = sync?.mode || 'multiple-choice';
+
+  $('free-mode').value = mode;
+
+  const setup = $('free-answer-setup');
+  setup.hidden = mode !== 'free-answer';
+
+  if (mode === 'free-answer' && sync.freeAnswerGame) {
+    freeRounds = sync.freeAnswerGame.rounds.map(round => ({
+      number: round.number,
+      questions: round.questions.map(question => ({
+        number: question.number,
+        type: question.type
+      }))
+    }));
+  }
+
+  renderFreeRounds();
+}
+
+function renderFreeRounds() {
+  const box = $('free-rounds');
+  box.innerHTML = '';
+
+  freeRounds.forEach((round, roundIndex) => {
+    const row = document.createElement('div');
+    row.className = 'free-round';
+
+    row.innerHTML = `
+      <div class="free-round-head">
+        <span>ROUND ${round.number}</span>
+        <button class="btn xs danger-hover">REMOVE</button>
+      </div>
+      <div class="free-questions"></div>
+      <button class="btn xs">+ QUESTION</button>
+    `;
+
+    const questions = row.querySelector('.free-questions');
+
+    round.questions.forEach((question, questionIndex) => {
+      const q = document.createElement('div');
+      q.className = 'free-question';
+
+      q.innerHTML = `
+        <span>Q${question.number}</span>
+        <select>
+          <option value="normal">NORMAL</option>
+          <option value="duplet">DUPLET</option>
+          <option value="blitz">BLITZ</option>
+        </select>
+        <button class="btn xs danger-hover">×</button>
+      `;
+
+      const select = q.querySelector('select');
+      select.value = question.type;
+
+      select.addEventListener('change', () => {
+        question.type = select.value;
+      });
+
+      q.querySelector('button').addEventListener('click', () => {
+        round.questions.splice(questionIndex, 1);
+
+        round.questions.forEach((item, index) => {
+          item.number = index + 1;
+        });
+
+        renderFreeRounds();
+      });
+
+      questions.appendChild(q);
+    });
+
+    row.querySelector('.free-round-head button').addEventListener('click', () => {
+      freeRounds.splice(roundIndex, 1);
+
+      freeRounds.forEach((item, index) => {
+        item.number = index + 1;
+      });
+
+      renderFreeRounds();
+    });
+
+    row.querySelector('.free-questions + button').addEventListener('click', () => {
+      round.questions.push({
+        number: round.questions.length + 1,
+        type: 'normal'
+      });
+
+      renderFreeRounds();
+    });
+
+    box.appendChild(row);
+  });
+}
+
 // Which operator buttons + hint belong to each session state.
 function opControls(s, S) {
   switch (s.state) {
     case 'LOBBY': {
-      const canStart = s.connectedCount > 0 && s.bank.included > 0;
+      const freeAnswer = s.mode === 'free-answer';
+      const contentReady = freeAnswer
+        ? s.freeAnswerGame?.rounds?.length > 0
+        : s.bank.included > 0;
+
+      const canStart = s.connectedCount > 0 && contentReady;
+
       return {
-        buttons: [{ label: '▸ START GAME', event: 'host:start', primary: canStart, disabled: !canStart }],
-        hint: `${s.bank.included} QUESTIONS IN SET · ${S.shuffle ? 'SHUFFLED' : 'SAVED ORDER'}` +
-          (s.connectedCount ? '' : ' · WAITING FOR PLAYERS')
+        buttons: [{
+          label: '▸ START GAME',
+          event: 'host:start',
+          primary: canStart,
+          disabled: !canStart
+        }],
+        hint: freeAnswer
+          ? `${s.freeAnswerGame.rounds.length} ROUNDS · FREE ANSWER` +
+            (s.connectedCount ? '' : ' · WAITING FOR PLAYERS')
+          : `${s.bank.included} QUESTIONS IN SET · ${S.shuffle ? 'SHUFFLED' : 'SAVED ORDER'}` +
+            (s.connectedCount ? '' : ' · WAITING FOR PLAYERS')
       };
     }
     case 'QUESTION_ACTIVE':
@@ -547,6 +660,64 @@ $('csv-import').addEventListener('click', async () => {
   csvParsed = null;
   setImportButton(0);
   loadBank();
+});
+
+$('free-mode').addEventListener('change', e => {
+  const mode = e.target.value;
+
+  $('free-answer-setup').hidden = mode !== 'free-answer';
+
+  if (mode === 'free-answer' && !freeRounds.length) {
+    freeRounds = [{
+      number: 1,
+      questions: [
+        {
+          number: 1,
+          type: 'normal'
+        }
+      ]
+    }];
+
+    renderFreeRounds();
+  }
+});
+
+$('free-add-round').addEventListener('click', () => {
+  freeRounds.push({
+    number: freeRounds.length + 1,
+    questions: [
+      {
+        number: 1,
+        type: 'normal'
+      }
+    ]
+  });
+
+  renderFreeRounds();
+});
+
+$('free-save').addEventListener('click', () => {
+  if (!freeRounds.length) return;
+
+  if (freeRounds.some(round => !round.questions.length)) {
+    return;
+  }
+
+  socket.emit('host:configureFreeAnswer', {
+    rounds: freeRounds
+  });
+
+  $('free-save-msg').textContent = 'FREE-ANSWER GAME SAVED';
+  $('free-save-msg').hidden = false;
+});
+
+$('free-clear').addEventListener('click', () => {
+  socket.emit('host:clearFreeAnswer');
+
+  freeRounds = [];
+  $('free-mode').value = 'multiple-choice';
+  $('free-answer-setup').hidden = true;
+  $('free-save-msg').hidden = true;
 });
 
 loadBank();

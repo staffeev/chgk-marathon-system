@@ -64,6 +64,40 @@
       </section>
 
       <section class="panel">
+      <div class="panel-head">┌ FREE ANSWER GAME</div>
+      <div class="panel-body gap11">
+
+        <label class="field">
+          <span class="field-label">GAME MODE</span>
+          <select id="free-mode">
+            <option value="multiple-choice">MULTIPLE CHOICE</option>
+            <option value="free-answer">FREE ANSWER</option>
+          </select>
+        </label>
+
+        <div id="free-answer-setup" hidden>
+          <div class="field">
+            <span class="field-label">ROUNDS</span>
+            <div id="free-rounds"></div>
+          </div>
+
+          <div class="btn-row">
+            <button class="btn sm" id="free-add-round">+ ADD ROUND</button>
+            <button class="btn sm primary" id="free-save">SAVE FREE-ANSWER GAME</button>
+            <button class="btn sm danger-hover" id="free-clear">CLEAR</button>
+          </div>
+
+          <div class="hint lh">
+            NORMAL = 1 × 60S · DUPLET = 2 × 30S · BLITZ = 3 × 20S
+          </div>
+
+          <div class="hint" id="free-save-msg" hidden></div>
+        </div>
+
+      </div>
+    </section>
+
+      <section class="panel">
         <div class="panel-head">┌ PRESENTATION</div>
         <div class="panel-body gap11">
           <label class="field">
