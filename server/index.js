@@ -106,6 +106,10 @@ const bus = {
     io.to('presenters').emit('answeredCount', payload);
     pushAdmins();
   },
+  freeAnswerPhase(payload) {
+    io.emit('freeAnswerPhase', payload);
+    pushAdmins();
+  },
   questionEnd(payload) {
     io.emit('questionEnd', payload);
     pushAdmins();
@@ -199,9 +203,23 @@ io.on('connection', socket => {
     if (!p) return;
     session.submit(p.token, Number(data.questionId), data.optionIndex);
   });
+  on('submitFreeAnswer', data => {
+    data = obj(data);
+    const p = [...session.players.values()].find(x => x.socketId === socket.id);
+    if (!p) return;
+
+    session.submitFreeAnswer(p.token, data.answer);
+  });
 
   // Operator controls — only sockets that identified as admin.
   const asAdmin = fn => (...args) => { if (socket.rooms.has('admins')) fn(...args); };
+  on('host:freeAnswerPause', asAdmin(() => {
+    session.pauseFreeAnswer();
+  }));
+
+  on('host:freeAnswerResume', asAdmin(() => {
+    session.resumeFreeAnswer();
+  }));
   on('host:start', asAdmin(() => session.start()));
   on('host:next', asAdmin(() => session.next()));
   on('host:showLeaderboard', asAdmin(() => session.showLeaderboard()));

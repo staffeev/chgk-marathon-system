@@ -26,10 +26,20 @@ class GameSession {
     this.current = null; // full question row for the active/last question
     this.qStart = 0;
     this.qLimit = this.settings().TIME_LIMIT;
+    this.freeAnswerPhase = null;
+    this.freeAnswerPhaseStart = 0;
+    this.freeAnswerPhaseLimit = 0;
+    this.freeAnswerSubQuestion = 0;
     this.dist = [0, 0, 0, 0];
     this.correctIdx = -1;
     this.prevRanks = null;
     this.deltas = new Map();
+
+    // Game mode and configuration.
+    // "multiple-choice" is the existing game mode.
+    this.mode = 'multiple-choice';
+    this.freeAnswerGame = null;
+
     this.clearAuto();
   }
 
@@ -41,6 +51,69 @@ class GameSession {
   scoringPool() { return [...this.players.values()].filter(p => p.eligibleFrom <= this.idx); }
 
   clearAuto() { if (this.autoTimer) { clearTimeout(this.autoTimer); this.autoTimer = null; } }
+
+    // ---- free-answer game configuration ----
+
+  configureFreeAnswerGame(rounds) {
+    if (this.state !== 'LOBBY') return false;
+    if (!Array.isArray(rounds) || !rounds.length) return false;
+
+    const normalized = rounds.map((round, roundIndex) => {
+      const questions = Array.isArray(round.questions)
+        ? round.questions
+        : [];
+
+      return {
+        number: Number.isInteger(round.number)
+          ? round.number
+          : roundIndex + 1,
+
+        questions: questions.map((question, questionIndex) => ({
+          number: Number.isInteger(question.number)
+            ? question.number
+            : questionIndex + 1,
+
+          type: ['normal', 'duplet', 'blitz'].includes(question.type)
+            ? question.type
+            : 'normal'
+        }))
+      };
+    });
+
+    // Every round must contain at least one question.
+    if (normalized.some(round => !round.questions.length)) {
+      return false;
+    }
+
+    this.mode = 'free-answer';
+    this.freeAnswerGame = {
+      rounds: normalized
+    };
+
+    return true;
+  }
+
+  clearFreeAnswerGame() {
+    if (this.state !== 'LOBBY') return false;
+
+    this.mode = 'multiple-choice';
+    this.freeAnswerGame = null;
+
+    return true;
+  }
+
+  isFreeAnswer() {
+    return this.mode === 'free-answer';
+  }
+
+  freeAnswerQuestionCount() {
+    if (!this.freeAnswerGame) return 0;
+
+    return this.freeAnswerGame.rounds.reduce(
+      (total, round) => total + round.questions.length,
+      0
+    );
+  }
 
   // ---- players ----
 
@@ -100,13 +173,32 @@ class GameSession {
 
   start() {
     if (this.state !== 'LOBBY') return;
-    const set = this.repo.includedQuestions();
-    if (!set.length || !this.connected().length) return;
-    const ids = set.map(q => q.id);
-    this.order = this.settings().shuffle ? shuffle(ids) : ids;
+    if (!this.connected().length) return;
+
+    // Free-answer game uses its own round/question configuration.
+    // The existing multiple-choice mode keeps using the question bank.
+    if (this.isFreeAnswer()) {
+      if (!this.freeAnswerGame || !this.freeAnswerGame.rounds.length) return;
+
+      this.order = this.freeAnswerGame.rounds.flatMap(round =>
+        round.questions.map(question => ({
+          roundNumber: round.number,
+          questionNumber: question.number,
+          type: question.type
+        }))
+      );
+    } else {
+      const set = this.repo.includedQuestions();
+      if (!set.length) return;
+
+      const ids = set.map(q => q.id);
+      this.order = this.settings().shuffle ? shuffle(ids) : ids;
+    }
+
     this.idx = -1;
     this.prevRanks = null;
     this.deltas = new Map();
+
     for (const p of this.players.values()) {
       p.score = 0;
       p.cumTimeMs = 0;
@@ -114,29 +206,75 @@ class GameSession {
       p.lastResult = null;
       p.eligibleFrom = 0;
     }
+
     this.nextQuestion();
   }
 
   nextQuestion() {
     this.clearAuto();
-    let q = null;
-    while (this.idx + 1 < this.order.length && !q) {
+
+    if (this.isFreeAnswer()) {
       this.idx++;
-      q = this.repo.get(this.order[this.idx]); // skip questions deleted mid-game
+
+      if (this.idx >= this.order.length) {
+        return this.podium();
+      }
+
+      this.current = this.order[this.idx];
+
+      // The exact timing for normal/duplet/blitz will be implemented
+      // in the next step. For now every free-answer question starts
+      // with the existing 60-second question window.
+      this.qLimit = 60;
+      this.freeAnswerPhase = 'active';
+      this.freeAnswerPhaseStart = Date.now();
+      this.freeAnswerPhaseLimit = 60;
+      this.freeAnswerSubQuestion = 1;
+    } else {
+      let q = null;
+
+      while (this.idx + 1 < this.order.length && !q) {
+        this.idx++;
+        q = this.repo.get(this.order[this.idx]); // skip questions deleted mid-game
+      }
+
+      if (!q) return this.podium();
+
+      this.current = q;
+      this.qLimit = q.time || this.settings().TIME_LIMIT;
     }
-    if (!q) return this.podium();
-    this.current = q;
-    this.qLimit = q.time || this.settings().TIME_LIMIT;
+
     this.qStart = Date.now();
     this.state = 'QUESTION_ACTIVE';
     this.dist = [0, 0, 0, 0];
     this.correctIdx = -1;
-    for (const p of this.players.values()) p.current = null;
+
+    for (const p of this.players.values()) {
+      p.current = null;
+      delete p.freeAnswerDraft;
+    }
     this.bus.questionStart(this.questionStartPayload());
   }
 
   questionStartPayload(elapsedMs = 0) {
     const q = this.current;
+
+    if (this.isFreeAnswer()) {
+      return {
+        index: this.idx,
+        qNum: this.idx + 1,
+        total: this.order.length,
+
+        roundNumber: q.roundNumber,
+        questionNumber: q.questionNumber,
+        type: q.type,
+
+        timeLimit: this.qLimit,
+        serverStartTime: this.qStart,
+        elapsedMs
+      };
+    }
+
     return {
       index: this.idx,
       qNum: this.idx + 1,
@@ -167,20 +305,244 @@ class GameSession {
     this.checkAllAnswered();
   }
 
+  submitFreeAnswer(token, answer) {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+
+    const p = this.players.get(token);
+    if (!p || !p.connected || p.eligibleFrom > this.idx) return;
+
+    // В фазе записи ответ ещё можно менять.
+    if (this.freeAnswerPhase === 'recording') {
+      p.freeAnswerDraft = String(answer ?? '');
+      return;
+    }
+
+    // В основной фазе уже зафиксированный ответ изменить нельзя.
+    if (this.freeAnswerPhase !== 'active') return;
+    if (p.current) return;
+
+    p.current = {
+      answer: String(answer ?? ''),
+      elapsedMs: Date.now() - this.freeAnswerPhaseStart,
+      locked: true
+    };
+
+    this.bus.answerAck(p, {
+      locked: true
+    });
+
+    this.bus.answeredCount(this.answeredCount());
+  }
+
+  startFreeAnswerPause() {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+
+    this.freeAnswerPhase = 'paused';
+    this.freeAnswerPhaseStart = Date.now();
+    this.freeAnswerPhaseLimit = 0;
+
+    this.bus.freeAnswerPhase({
+      phase: 'paused',
+      subQuestion: this.freeAnswerSubQuestion
+    });
+  }
+
+  startFreeAnswerSubQuestion() {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+
+    const type = this.current?.type;
+
+    if (type === 'normal') {
+      this.finishFreeAnswerActive();
+      return;
+    }
+
+    const maxSubQuestions = type === 'duplet' ? 2 : 3;
+
+    this.freeAnswerSubQuestion++;
+
+    if (this.freeAnswerSubQuestion > maxSubQuestions) {
+      this.finishFreeAnswerActive();
+      return;
+    }
+
+    this.freeAnswerPhase = 'active';
+    this.freeAnswerPhaseStart = Date.now();
+    this.freeAnswerPhaseLimit = type === 'duplet' ? 30 : 20;
+  }
+
+  finishFreeAnswerActive() {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+
+    this.freeAnswerPhase = 'recording';
+    this.freeAnswerPhaseStart = Date.now();
+    this.freeAnswerPhaseLimit = 10;
+
+    for (const p of this.players.values()) {
+      if (!p.current) {
+        p.freeAnswerDraft = '';
+      }
+    }
+
+    this.bus.freeAnswerPhase({
+      phase: 'recording',
+      timeLimit: 10,
+      serverStartTime: this.freeAnswerPhaseStart
+    });
+  }
+
+  finalizeFreeAnswer() {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+    if (this.freeAnswerPhase !== 'recording') return;
+
+    for (const p of this.players.values()) {
+      if (!p.current) {
+        p.current = {
+          answer: p.freeAnswerDraft ?? '',
+          elapsedMs: this.qLimit * 1000,
+          locked: true
+        };
+      }
+
+      delete p.freeAnswerDraft;
+    }
+
+    this.endFreeAnswerQuestion();
+  }
+
+  endFreeAnswerQuestion() {
+    if (!this.isFreeAnswer()) return;
+    if (this.state !== 'QUESTION_ACTIVE') return;
+
+    this.clearAuto();
+
+    this.state = 'REVEAL';
+    this.freeAnswerPhase = null;
+
+    for (const p of this.scoringPool()) {
+      if (p.current) {
+        p.lastResult = {
+          answered: true,
+          answer: p.current.answer
+        };
+      } else {
+        p.lastResult = {
+          answered: false,
+          answer: ''
+        };
+      }
+    }
+
+    this.bus.questionEnd({
+      freeAnswer: true
+    });
+  }
+
+  pauseFreeAnswer() {
+    if (!this.isFreeAnswer()) return false;
+    if (this.state !== 'QUESTION_ACTIVE') return false;
+    if (this.freeAnswerPhase !== 'active') return false;
+
+    this.freeAnswerPhase = 'paused';
+    this.freeAnswerPhaseStart = Date.now();
+    this.freeAnswerPhaseLimit = 0;
+
+    this.bus.freeAnswerPhase({
+      phase: 'paused',
+      subQuestion: this.freeAnswerSubQuestion
+    });
+
+    return true;
+  }
+
+  resumeFreeAnswer() {
+    if (!this.isFreeAnswer()) return false;
+    if (this.state !== 'QUESTION_ACTIVE') return false;
+    if (this.freeAnswerPhase !== 'paused') return false;
+
+    const type = this.current?.type;
+    const maxSubQuestions = type === 'duplet' ? 2 : type === 'blitz' ? 3 : 1;
+
+    this.freeAnswerSubQuestion++;
+
+    if (this.freeAnswerSubQuestion > maxSubQuestions) {
+      this.finishFreeAnswerActive();
+      return true;
+    }
+
+    this.freeAnswerPhase = 'active';
+    this.freeAnswerPhaseStart = Date.now();
+    this.freeAnswerPhaseLimit =
+      type === 'duplet' ? 30 :
+      type === 'blitz' ? 20 :
+      60;
+
+    this.bus.freeAnswerPhase({
+      phase: 'active',
+      subQuestion: this.freeAnswerSubQuestion,
+      timeLimit: this.freeAnswerPhaseLimit,
+      serverStartTime: this.freeAnswerPhaseStart
+    });
+
+    return true;
+  }
+
   answeredCount() {
     const el = this.eligible();
     return { answered: el.filter(p => p.current).length, total: el.length };
   }
 
   checkAllAnswered() {
+    if (this.isFreeAnswer()) return;
     if (this.state !== 'QUESTION_ACTIVE') return;
+
     const el = this.eligible();
     if (el.length && el.every(p => p.current)) this.endQuestion();
   }
 
   tick() {
     if (this.state !== 'QUESTION_ACTIVE') return;
-    if (Date.now() - this.qStart >= this.qLimit * 1000) this.endQuestion();
+
+    if (!this.isFreeAnswer()) {
+      if (Date.now() - this.qStart >= this.qLimit * 1000) {
+        this.endQuestion();
+      }
+      return;
+    }
+
+    const elapsedMs = Date.now() - this.freeAnswerPhaseStart;
+
+    if (this.freeAnswerPhase === 'active') {
+      if (elapsedMs >= this.freeAnswerPhaseLimit * 1000) {
+        const type = this.current?.type;
+
+        if (type === 'normal') {
+          this.finishFreeAnswerActive();
+          return;
+        }
+
+        const maxSubQuestions = type === 'duplet' ? 2 : 3;
+
+        if (this.freeAnswerSubQuestion < maxSubQuestions) {
+          this.startFreeAnswerPause();
+        } else {
+          this.finishFreeAnswerActive();
+        }
+
+        return;
+      }
+    }
+
+    if (this.freeAnswerPhase === 'recording') {
+      if (elapsedMs >= 10 * 1000) {
+        this.finalizeFreeAnswer();
+      }
+    }
   }
 
   endQuestion() {
