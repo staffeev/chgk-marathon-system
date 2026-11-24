@@ -784,74 +784,62 @@ class GameSession {
     }
 
     const maxSubQuestions = this.getSubQuestionCount();
+    const isBetweenSubQuestions =
+      this.freeAnswerPauseReason === 'between-subquestions';
 
-    if (
-      this.freeAnswerPauseReason ===
-      'between-subquestions'
-    ) {
+    let elapsedMs = 0;
+
+    if (isBetweenSubQuestions) {
       // Автоматическая пауза между частями duplet/blitz:
-      // переходим к следующей части с полным временем.
-      const nextSubQuestion =
-        this.freeAnswerSubQuestion + 1;
+      // начинаем следующую часть с полным временем.
+      const nextSubQuestion = this.freeAnswerSubQuestion + 1;
 
       if (nextSubQuestion > maxSubQuestions) {
         return this.finishFreeAnswerActive();
       }
 
       this.freeAnswerSubQuestion = nextSubQuestion;
-
-      this.freeAnswerPhaseLimit =
-        this.getActivePhaseLimit();
+      this.freeAnswerPhaseLimit = this.getActivePhaseLimit();
+      this.freeAnswerPhaseStart = Date.now();
     } else {
-      // Ручная пауза:
-      // продолжаем ту же часть с сохранённого остатка.
+      // Ручная пауза: сохраняем исходную длительность фазы,
+      // а прошедшее до паузы время восстанавливаем через phaseStart.
+      const originalLimit = this.getActivePhaseLimit();
       const remainingMs =
-        this.freeAnswerRemainingMs ??
-        this.getActivePhaseLimit() * 1000;
+        this.freeAnswerRemainingMs ?? originalLimit * 1000;
 
       if (remainingMs <= 0) {
-        if (
-          this.freeAnswerSubQuestion <
-          maxSubQuestions
-        ) {
-          this.freeAnswerPauseReason =
-            'between-subquestions';
-
+        if (this.freeAnswerSubQuestion < maxSubQuestions) {
+          this.freeAnswerPauseReason = 'between-subquestions';
           this.freeAnswerRemainingMs = null;
-
           return this.resumeFreeAnswer();
         }
 
         return this.finishFreeAnswerActive();
       }
 
-      this.freeAnswerPhaseLimit =
-        remainingMs / 1000;
+      this.freeAnswerPhaseLimit = originalLimit;
+      elapsedMs = Math.max(0, originalLimit * 1000 - remainingMs);
+      this.freeAnswerPhaseStart = Date.now() - elapsedMs;
     }
 
     this.freeAnswerPhase = 'active';
-
-    this.freeAnswerPhaseStart = Date.now();
-
     this.freeAnswerPauseReason = null;
     this.freeAnswerRemainingMs = null;
 
-    const remainingMs =
-      this.freeAnswerPhaseLimit * 1000;
+    elapsedMs = Math.max(0, Date.now() - this.freeAnswerPhaseStart);
+
+    const phaseDurationMs = this.freeAnswerPhaseLimit * 1000;
+    const remainingMs = Math.max(0, phaseDurationMs - elapsedMs);
 
     this.bus.freeAnswerPhase({
       phase: 'active',
-
-      subQuestion:
-        this.freeAnswerSubQuestion,
-
-      timeLimit:
-        this.freeAnswerPhaseLimit,
-
+      subQuestion: this.freeAnswerSubQuestion,
+      timeLimit: this.freeAnswerPhaseLimit,
+      phaseTimeLimit: this.freeAnswerPhaseLimit,
+      elapsedMs,
       remainingMs,
-
-      serverStartTime:
-        this.freeAnswerPhaseStart
+      serverStartTime: this.freeAnswerPhaseStart
     });
 
     return true;

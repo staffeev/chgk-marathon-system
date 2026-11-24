@@ -174,19 +174,9 @@ function startQuestionCountdown(payload = {}) {
     return;
   }
 
-  const remainingMs =
-  payload.remainingMs == null
-    ? NaN
-    : Number(payload.remainingMs);
-
-  if (
-    Number.isFinite(remainingMs) &&
-    remainingMs >= 0
-  ) {
-    countdown.start(remainingMs / 1000, 0);
-    return;
-  }
-
+  // Используем исходную длительность фазы и прошедшее время.
+  // remainingMs нельзя использовать как новую длительность:
+  // иначе полоска после снятия паузы начинается со 100%.
   const timeLimit = Number(
     payload.phaseTimeLimit ??
     payload.timeLimit ??
@@ -195,9 +185,15 @@ function startQuestionCountdown(payload = {}) {
     60
   );
 
-  const elapsedMs = Number(payload.elapsedMs || 0);
+  const elapsedMs = Number(
+    payload.elapsedMs ??
+    payload.phaseElapsedMs ??
+    0
+  );
 
-  countdown.start(timeLimit, elapsedMs);
+  if (Number.isFinite(timeLimit) && timeLimit > 0) {
+    countdown.start(timeLimit, elapsedMs);
+  }
 }
 
 // ---- stored nickname ----
@@ -514,8 +510,7 @@ function submitFreeAnswer() {
   if (
     !question ||
     freeAnswerPaused ||
-    freeAnswerLocked ||
-    freeAnswerRecording
+    freeAnswerLocked
   ) {
     return;
   }
@@ -569,7 +564,7 @@ function updateFreeAnswerUI() {
       status.textContent = 'ОТВЕТ ЗАФИКСИРОВАН';
     } else {
       input.disabled = false;
-      button.disabled = true;
+      button.disabled = false;
 
       status.textContent = 'ЗАПИСЬ ОТВЕТА';
     }
