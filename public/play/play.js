@@ -37,9 +37,23 @@ let eligibleFrom = 0;
 let question = null;   // active questionStart payload
 let lockedIndex = null;
 
+let freeAnswerLocked = false;
+let freeAnswerRecording = false;
+let freeAnswerDraft = '';
+
 const countdown = createCountdown(({ whole, fraction, low }) => {
   $('q-timer').textContent = 'T-' + pad(whole, 3);
   $('q-timer').classList.toggle('low', low);
+
+  const warning = $('q-warning');
+  if (warning) {
+    warning.hidden =
+      !low ||
+      !question ||
+      question.freeAnswer !== true ||
+      freeAnswerRecording;
+  }
+
   const fill = $('q-bar-fill');
   fill.style.width = (100 * fraction).toFixed(1) + '%';
   fill.classList.toggle('low', low);
@@ -145,8 +159,21 @@ function applySnapshot(snap) {
       break;
     case 'QUESTION_ACTIVE':
       if (!snap.question) return show('s-wait');
+
       question = snap.question;
-      lockedIndex = snap.lockedIndex != null ? snap.lockedIndex : null;
+
+      if (question.freeAnswer === true) {
+        freeAnswerLocked = !!snap.freeAnswer?.locked;
+        freeAnswerRecording = question.phase === 'recording';
+        freeAnswerDraft = snap.freeAnswer?.answer ?? '';
+
+        if (question.phase === 'paused') {
+          countdown.stop();
+        }
+      } else {
+        lockedIndex = snap.lockedIndex != null ? snap.lockedIndex : null;
+      }
+
       renderQuestion(snap.question.elapsedMs || 0);
       break;
     case 'REVEAL':
@@ -188,8 +215,14 @@ socket.on('stateChange', d => {
 socket.on('questionStart', payload => {
   if (!store.token) return;
   if (eligibleFrom > payload.index) return show('s-wait');
+
   question = payload;
   lockedIndex = null;
+
+  freeAnswerLocked = false;
+  freeAnswerRecording = false;
+  freeAnswerDraft = '';
+
   renderQuestion(payload.elapsedMs || 0);
 });
 
@@ -200,6 +233,95 @@ const sizeClass = text => (SIZE_STEPS.find(([max]) => text.length <= max) || [, 
 
 function renderQuestion(elapsedMs) {
   $('q-nick').textContent = me.nickname;
+
+  const freeAnswer = question.freeAnswer === true ||
+    question.roundNumber != null;
+
+  if (freeAnswer) {
+    $('q-text').textContent =
+      `Раунд ${question.roundNumber} · Вопрос ${question.questionNumber}`;
+    $('q-text').className = 'q-text len-s';
+
+    const wrap = $('q-opts');
+    wrap.innerHTML = '';
+
+    const textarea = document.createElement('textarea');
+    textarea.id = 'free-answer-input';
+    textarea.className = 'free-answer-input';
+    textarea.placeholder = 'Введите ответ…';
+    textarea.value = freeAnswerDraft;
+    textarea.autocomplete = 'off';
+    textarea.spellcheck = false;
+
+    const button = document.createElement('button');
+    button.id = 'free-answer-submit';
+    button.className = 'q-opt free-answer-submit';
+    button.textContent = 'ОТПРАВИТЬ';
+    button.addEventListener('click', submitFreeAnswer);
+
+    wrap.appendChild(textarea);
+    wrap.appendChild(button);
+
+    updateFreeAnswerUI();
+
+    countdown.start(question.phaseTimeLimit, elapsedMs);
+    show('s-question');
+    return;
+  }
+
+  function submitFreeAnswer() {
+    const input = $('free-answer-input');
+    if (!input || !question) return;
+
+    freeAnswerDraft = input.value;
+
+    if (freeAnswerRecording) {
+      socket.emit('submitFreeAnswer', {
+        answer: freeAnswerDraft
+      });
+      return;
+    }
+
+    if (freeAnswerLocked) return;
+
+    freeAnswerLocked = true;
+
+    socket.emit('submitFreeAnswer', {
+      answer: freeAnswerDraft
+    });
+
+    updateFreeAnswerUI();
+  }
+
+  function updateFreeAnswerUI() {
+    const input = $('free-answer-input');
+    const button = $('free-answer-submit');
+
+    if (!input || !button) return;
+
+    if (freeAnswerRecording) {
+      input.disabled = false;
+      button.disabled = false;
+      button.textContent = 'ОТПРАВИТЬ';
+      $('q-status').textContent = 'ЗАПИСЬ ОТВЕТА';
+      return;
+    }
+
+    if (freeAnswerRecording) {
+      input.disabled = false;
+      button.disabled = false;
+      button.textContent = 'ОТПРАВИТЬ';
+      $('q-status').textContent = 'Запись ответа';
+      $('q-warning').hidden = true;
+      return;
+    }
+
+    input.disabled = false;
+    button.disabled = false;
+    button.textContent = 'ОТПРАВИТЬ';
+    $('q-status').textContent = 'ВВЕДИТЕ ОТВЕТ';
+  }
+
   $('q-text').textContent = question.text;
   $('q-text').className = 'q-text ' + sizeClass(question.text);
 
@@ -215,7 +337,9 @@ function renderQuestion(elapsedMs) {
   });
   paintOptions();
 
-  $('q-status').textContent = lockedIndex != null ? STATUS_LOCKED : STATUS_OPEN;
+  $('q-status').textContent =
+    lockedIndex != null ? STATUS_LOCKED : STATUS_OPEN;
+
   countdown.start(question.timeLimit, elapsedMs);
   show('s-question');
 }
@@ -246,6 +370,40 @@ function tap(i) {
 }
 
 socket.on('answerAck', () => { $('q-status').textContent = STATUS_LOCKED; });
+
+socket.on('freeAnswerPhase', payload => {
+  if (!question || !question.roundNumber) return;
+
+  if (payload.phase === 'paused') {
+    countdown.stop();
+    $('q-status').textContent = 'ПАУЗА';
+    return;
+  }
+
+  if (payload.phase === 'active') {
+    freeAnswerRecording = false;
+
+    if (payload.subQuestion) {
+      question.subQuestion = payload.subQuestion;
+    }
+
+    countdown.start(
+      payload.timeLimit,
+      0
+    );
+
+    updateFreeAnswerUI();
+    return;
+  }
+
+  if (payload.phase === 'recording') {
+    freeAnswerRecording = true;
+    freeAnswerLocked = false;
+
+    countdown.start(10, 0);
+    updateFreeAnswerUI();
+  }
+});
 
 socket.on('questionEnd', () => countdown.stop());
 

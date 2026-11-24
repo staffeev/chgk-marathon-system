@@ -265,13 +265,19 @@ class GameSession {
         qNum: this.idx + 1,
         total: this.order.length,
 
+        freeAnswer: true,
         roundNumber: q.roundNumber,
         questionNumber: q.questionNumber,
         type: q.type,
 
         timeLimit: this.qLimit,
         serverStartTime: this.qStart,
-        elapsedMs
+        elapsedMs,
+
+        phase: this.freeAnswerPhase,
+        subQuestion: this.freeAnswerSubQuestion,
+        phaseTimeLimit: this.freeAnswerPhaseLimit,
+        phaseStartTime: this.freeAnswerPhaseStart
       };
     }
 
@@ -390,6 +396,7 @@ class GameSession {
 
     this.bus.freeAnswerPhase({
       phase: 'recording',
+      subQuestion: this.freeAnswerSubQuestion,
       timeLimit: 10,
       serverStartTime: this.freeAnswerPhaseStart
     });
@@ -736,17 +743,20 @@ class GameSession {
     snap.rank = ranks.get(p.token) || null;
     const eligibleNow = p.eligibleFrom <= this.idx;
     if (this.state === 'QUESTION_ACTIVE' && this.current && eligibleNow) {
-      snap.question = this.questionStartPayload(Date.now() - this.qStart);
-      snap.lockedIndex = p.current ? p.current.optionIndex : null;
-    } else if (this.state === 'REVEAL' && eligibleNow && p.lastResult) {
-      snap.lastResult = {
-        correct: p.lastResult.correct,
-        points: p.lastResult.points,
-        totalScore: p.score,
-        rank: p.lastResult.rank,
-        answered: p.lastResult.answered,
-        chosenIndex: p.lastResult.chosenIndex
-      };
+      snap.question = this.questionStartPayload(
+        this.freeAnswerPhase === 'paused'
+          ? 0
+          : Date.now() - this.freeAnswerPhaseStart
+      );
+
+      if (this.isFreeAnswer()) {
+        snap.freeAnswer = {
+          locked: !!p.current,
+          answer: p.current?.answer ?? p.freeAnswerDraft ?? ''
+        };
+      } else {
+        snap.lockedIndex = p.current ? p.current.optionIndex : null;
+      }
     }
     return snap;
   }
