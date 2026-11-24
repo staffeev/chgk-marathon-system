@@ -432,6 +432,22 @@ class GameSession {
       delete p.freeAnswerDraft;
     }
 
+    // Create an answer/grading row for every team eligible for this question.
+    // Drafts can then appear in the admin table while the question is active.
+    const questionResults = new Map();
+
+    for (const p of this.scoringPool()) {
+      questionResults.set(p.token, {
+        answer: '',
+        correct: false
+      });
+    }
+
+    this.freeAnswerResults.set(
+      this.idx,
+      questionResults
+    );
+
     this.bus.questionStart(
       this.questionStartPayload()
     );
@@ -531,39 +547,27 @@ class GameSession {
       return false;
     }
 
-    const p =
-      this.players.get(token);
+    const p = this.players.get(token);
 
     if (
       !p ||
       !p.connected ||
-      p.eligibleFrom > this.idx
+      p.eligibleFrom > this.idx ||
+      p.current
     ) {
       return false;
     }
 
-    // A submitted answer is immutable.
-    if (p.current) {
-      return false;
-    }
-
     const elapsedMs =
-      Date.now() -
-      this.freeAnswerPhaseStart;
+      Date.now() - this.freeAnswerPhaseStart;
 
     if (this.freeAnswerPhase === 'active') {
-      if (
-        elapsedMs >=
-        this.freeAnswerPhaseLimit * 1000
-      ) {
+      if (elapsedMs >= this.freeAnswerPhaseLimit * 1000) {
         this.tick();
         return false;
       }
     } else if (this.freeAnswerPhase === 'recording') {
-      if (
-        elapsedMs >=
-        FREE_ANSWER_RECORDING_TOTAL_MS
-      ) {
+      if (elapsedMs >= FREE_ANSWER_RECORDING_TOTAL_MS) {
         this.finalizeFreeAnswer();
         return false;
       }
@@ -571,15 +575,23 @@ class GameSession {
       return false;
     }
 
-    // Save the draft without submitting or locking it.
     this.setFreeAnswerDraft(p, answer);
+
+    const result = this.freeAnswerResults
+      .get(this.idx)
+      ?.get(token);
+
+    if (result) {
+      result.answer = p.freeAnswerDraft;
+    }
+
+    this.bus.adminChanged?.();
 
     return true;
   }
 
   setFreeAnswerDraft(player, answer) {
-    player.freeAnswerDraft =
-      String(answer ?? '');
+    player.freeAnswerDraft = String(answer ?? '');
   }
 
   submitFreeAnswer(token, answer) {
@@ -587,8 +599,7 @@ class GameSession {
       return;
     }
 
-    const p =
-      this.players.get(token);
+    const p = this.players.get(token);
 
     if (
       !p ||
@@ -599,21 +610,16 @@ class GameSession {
     }
 
     const elapsedMs =
-      Date.now() -
-      this.freeAnswerPhaseStart;
+      Date.now() - this.freeAnswerPhaseStart;
 
-    // The server is authoritative for active-phase deadlines.
     if (
       this.freeAnswerPhase === 'active' &&
-      elapsedMs >=
-        this.freeAnswerPhaseLimit * 1000
+      elapsedMs >= this.freeAnswerPhaseLimit * 1000
     ) {
       this.tick();
       return;
     }
 
-    // The visible recording timer is 10 seconds.
-    // The server accepts submissions for 3 additional hidden seconds.
     if (
       this.freeAnswerPhase === 'recording' &&
       elapsedMs >= FREE_ANSWER_RECORDING_TOTAL_MS
@@ -629,38 +635,34 @@ class GameSession {
       return;
     }
 
-    // A submitted answer cannot be changed or submitted again.
     if (p.current) {
       return;
     }
 
-    const value =
-      String(answer ?? '');
+    const value = String(answer ?? '');
 
-    // Keep the final submitted text as the current draft too.
     this.setFreeAnswerDraft(p, value);
+
+    const result = this.freeAnswerResults
+      .get(this.idx)
+      ?.get(token);
+
+    if (result) {
+      result.answer = value;
+    }
 
     p.current = {
       answer: value,
-
       elapsedMs:
         this.freeAnswerPhase === 'active'
           ? elapsedMs
           : this.qLimit * 1000,
-
       locked: true
     };
 
-    this.bus.answerAck(
-      p,
-      {
-        locked: true
-      }
-    );
-
-    this.bus.answeredCount(
-      this.answeredCount()
-    );
+    this.bus.answerAck(p, { locked: true });
+    this.bus.answeredCount(this.answeredCount());
+    this.bus.adminChanged?.();
   }
 
   // Compatibility wrapper for server/index.js.
@@ -962,38 +964,36 @@ class GameSession {
 
     this.clearAuto();
 
-    this.state =
-      'REVEAL';
+    this.state = 'REVEAL';
 
-    this.freeAnswerPhase =
-      null;
-
+    this.freeAnswerPhase = null;
     this.freeAnswerPauseReason = null;
     this.freeAnswerRemainingMs = null;
 
+    // Reuse the records created at question start. This is important:
+    // an administrator may already have graded an answer during the question.
     const results =
+      this.freeAnswerResults.get(this.idx) ||
       new Map();
 
-    for (
-      const p of this.scoringPool()
-    ) {
+    for (const p of this.scoringPool()) {
       const answer =
-        p.current?.answer ?? '';
+        p.current?.answer ??
+        p.freeAnswerDraft ??
+        '';
 
       p.lastResult = {
-        answered:
-          !!p.current,
-
+        answered: !!p.current || answer.trim().length > 0,
         answer
       };
 
-      results.set(
-        p.token,
-        {
-          answer,
-          correct: false
-        }
-      );
+      const result = results.get(p.token) || {
+        answer: '',
+        correct: false
+      };
+
+      result.answer = answer;
+      results.set(p.token, result);
     }
 
     this.freeAnswerResults.set(
@@ -1006,6 +1006,8 @@ class GameSession {
       questionIndex: this.idx
     });
 
+    this.bus.adminChanged?.();
+
     return true;
   }
 
@@ -1016,45 +1018,39 @@ class GameSession {
     token
   ) {
     if (
-      !Number.isInteger(
-        questionIndex
-      )
+      !Number.isInteger(questionIndex) ||
+      questionIndex < 0 ||
+      questionIndex > this.idx ||
+      ![
+        'QUESTION_ACTIVE',
+        'REVEAL',
+        'LEADERBOARD'
+      ].includes(this.state)
     ) {
       return false;
     }
 
     const results =
-      this.freeAnswerResults.get(
-        questionIndex
-      );
+      this.freeAnswerResults.get(questionIndex);
 
     const player =
       this.players.get(token);
 
-    if (
-      !results ||
-      !player
-    ) {
+    if (!results || !player) {
       return false;
     }
 
-    const result =
-      results.get(token);
+    const result = results.get(token);
 
-    if (!result) {
+    if (!result || !String(result.answer ?? '').trim()) {
       return false;
     }
 
-    // Idempotent:
-    // repeated click must not add
-    // multiple points.
-    if (result.correct) {
-      return true;
-    }
+    // Toggle the mark: first click awards one point, second click removes it.
+    result.correct = !result.correct;
+    player.score += result.correct ? 1 : -1;
 
-    result.correct = true;
-
-    player.score += 1;
+    this.bus.adminChanged?.();
 
     return true;
   }
@@ -1633,13 +1629,17 @@ class GameSession {
       settings:
         this.settings(),
 
+      // Full answer matrix for the admin's round table.
+      // Each item contains the global question index and all team answers.
+      freeAnswerAnswers:
+        this.order.map((_, questionIndex) => ({
+          questionIndex,
+          answers: this.freeAnswerGradingSnapshot(questionIndex)
+        })),
+
+      // Keep the legacy current-question field for existing admin code.
       freeAnswerGrading:
-        this.state ===
-          'REVEAL' ||
-        this.state ===
-          'LEADERBOARD'
-          ? this.freeAnswerGradingSnapshot()
-          : []
+        this.freeAnswerGradingSnapshot()
     };
   }
 

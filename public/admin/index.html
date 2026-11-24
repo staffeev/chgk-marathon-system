@@ -82,42 +82,41 @@
       </section>
 
 
-      <!-- ANSWER GRADING -->
+      <!-- ROUND RESULTS -->
       <section class="panel">
-        <div class="panel-head">┌ ANSWER GRADING</div>
+        <div class="panel-head">┌ ROUND RESULTS</div>
 
         <div class="panel-body gap11">
 
-          <div class="badge-row">
-            <span class="kv">
-              ROUND <span id="grading-round" class="amber">—</span>
-            </span>
+          <label class="field">
+            <span class="field-label">SELECT ROUND</span>
 
-            <span class="kv">
-              QUESTION <span id="grading-question" class="amber">—</span>
-            </span>
+            <select id="results-round">
+              <option value="">NO ROUNDS</option>
+            </select>
+          </label>
 
-            <span class="kv" id="grading-type">—</span>
-          </div>
-
-          <div class="btn-row" id="grading-nav"></div>
-
-          <div class="grading-table-wrap">
-            <table class="grading-table">
-              <thead>
+          <div class="round-results-wrap">
+            <table class="grading-table round-results-table">
+              <thead id="round-results-head">
                 <tr>
                   <th>TEAM</th>
-                  <th>ANSWER</th>
-                  <th>PTS</th>
+                  <th>RESULT</th>
                 </tr>
               </thead>
 
-              <tbody id="grading-list"></tbody>
+              <tbody id="round-results-body">
+                <tr>
+                  <td colspan="2" class="empty-cell">
+                    WAITING FOR GAME
+                  </td>
+                </tr>
+              </tbody>
             </table>
           </div>
 
           <div class="hint">
-            CLICK AN ANSWER TO MARK IT CORRECT · +1 POINT
+            CLICK AN ANSWER TO TOGGLE +1 POINT
           </div>
 
         </div>
@@ -202,6 +201,25 @@
 
           <div class="hint" id="current-phase">
             WAITING FOR GAME
+          </div>
+
+          <!-- ADMIN TIMER -->
+          <div class="admin-timer">
+
+            <div class="admin-timer-head">
+              <span class="field-label">
+                QUESTION TIMER
+              </span>
+
+              <span id="admin-timer">
+                T-000
+              </span>
+            </div>
+
+            <div class="admin-timer-bar">
+              <div id="admin-timer-fill"></div>
+            </div>
+
           </div>
 
           <div class="btn-row" id="phase-controls"></div>

@@ -7,19 +7,12 @@
  *   - controls the game session;
  *   - configures rounds and question types;
  *   - monitors connected teams;
- *   - displays submitted free-text answers;
+ *   - displays answers for every question in the selected round;
  *   - manually grades answers (+1);
  *   - displays cumulative scores;
  *   - controls presentation settings.
- *
- * There is no question bank and no multiple-choice logic.
  */
 
-/* Operator credential.
- * The server authorizes by loopback, so on the host machine there is
- * nothing to supply. ?k=<token> is the opt-in path for running this
- * console from another device.
- */
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
 const socket = ADMIN_KEY
@@ -30,19 +23,18 @@ let sync = null;
 let settings = null;
 let freeRounds = [];
 
-/*
- * Prevent admin:sync from overwriting configuration while the operator
- * is editing it locally.
- */
 let freeRoundsDirty = false;
 let freeRoundsInitialized = false;
 
+let timerInterval = null;
+
 
 /* -------------------------------------------------------------------------- */
-/* API                                                                        */
+/* HELPERS                                                                    */
 /* -------------------------------------------------------------------------- */
 
-async function api(path, options = {}) {
+
+function api(path, options = {}) {
   const opts = Object.assign({}, options);
 
   if (ADMIN_KEY) {
@@ -51,13 +43,10 @@ async function api(path, options = {}) {
     });
   }
 
-  const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-
-  return {
+  return fetch(path, opts).then(async res => ({
     ok: res.ok,
-    data
-  };
+    data: await res.json().catch(() => ({}))
+  }));
 }
 
 
@@ -68,6 +57,7 @@ async function api(path, options = {}) {
 socket.on('connect', () => {
   socket.emit('admin:hello');
 });
+
 
 socket.on('adminDenied', d => {
   document.body.innerHTML =
@@ -91,15 +81,12 @@ socket.on('admin:sync', s => {
   renderCurrentGame();
   renderTeams();
   renderScoreboard();
-  renderGrading();
+  renderRoundResults();
   renderPresentation();
+  updateAdminTimer();
 });
 
 
-/*
- * The server already pushes the complete admin snapshot after every
- * meaningful game event, so there is deliberately no polling here.
- */
 socket.on('connect_error', err => {
   console.error('[admin] socket connection failed:', err);
 });
@@ -122,6 +109,8 @@ function renderSession() {
   if (!sync) return;
 
   const badge = $('state-badge');
+
+  if (!badge) return;
 
   let stateText = String(sync.state || 'LOBBY')
     .replaceAll('_', ' ');
@@ -208,20 +197,12 @@ function opControls(s) {
           event: 'host:freeAnswerPause'
         });
       } else if (s.freeAnswerPhase === 'recording') {
-        /*
-         * Recording ends automatically on the server after 10 seconds.
-         * There is currently no server event for finishing it early.
-         */
         buttons.push({
           label: '● RECORDING · WAIT',
           disabled: true
         });
       }
 
-      /*
-       * host:skip is the server event for moving past an active question.
-       * host:next only works after the leaderboard has been shown.
-       */
       buttons.push({
         label: '≫ SKIP QUESTION',
         event: 'host:skip'
@@ -472,10 +453,6 @@ function copyRoundsFromServer() {
 
 
 function renderFreeAnswerSetup() {
-  /*
-   * Server snapshots arrive after many unrelated events, such as a team
-   * connecting. Do not overwrite the operator's unsaved local changes.
-   */
   if (!freeRoundsDirty || !freeRoundsInitialized) {
     copyRoundsFromServer();
   }
@@ -741,102 +718,424 @@ function renderCurrentGame() {
 
 
 /* -------------------------------------------------------------------------- */
-/* ANSWER GRADING                                                             */
+/* ADMIN QUESTION TIMER                                                       */
 /* -------------------------------------------------------------------------- */
 
-function renderGrading() {
-  const list = $('grading-list');
+function timerRemainingMs() {
+  if (!sync || sync.state !== 'QUESTION_ACTIVE') {
+    return null;
+  }
 
-  if (!list || !sync) return;
+  if (sync.freeAnswerPhase === 'paused') {
+    const pausedRemaining = Number(sync.freeAnswerRemainingMs);
 
-  const current = currentQuestion();
+    return Number.isFinite(pausedRemaining)
+      ? Math.max(0, pausedRemaining)
+      : null;
+  }
 
-  if (!current) {
-    $('grading-round').textContent = '—';
-    $('grading-question').textContent = '—';
-    $('grading-type').textContent = '—';
+  const phase = sync.freeAnswerPhase;
 
-    list.innerHTML =
-      '<tr><td colspan="3" class="hint">NO ACTIVE QUESTION</td></tr>';
+  if (phase !== 'active' && phase !== 'recording') {
+    return null;
+  }
 
+  const phaseStart = Number(sync.freeAnswerPhaseStart);
+  const phaseLimit = Number(sync.freeAnswerPhaseLimit);
+
+  if (
+    Number.isFinite(phaseStart) &&
+    Number.isFinite(phaseLimit) &&
+    phaseLimit > 0
+  ) {
+    const elapsed = Date.now() - phaseStart;
+
+    return Math.max(0, phaseLimit - elapsed);
+  }
+
+  const remaining = Number(sync.freeAnswerRemainingMs);
+
+  return Number.isFinite(remaining)
+    ? Math.max(0, remaining)
+    : null;
+}
+
+
+function formatTimer(ms) {
+  if (ms === null || !Number.isFinite(ms)) {
+    return '—';
+  }
+
+  const seconds = Math.ceil(ms / 1000);
+
+  return String(seconds).padStart(2, '0');
+}
+
+
+function updateAdminTimer() {
+  const timer = $('admin-timer');
+  const fill = $('admin-timer-fill');
+
+  if (!timer || !fill) return;
+
+  const active =
+    sync?.state === 'QUESTION_ACTIVE';
+
+  const phase = sync?.freeAnswerPhase;
+
+  if (!active || !phase) {
+    timer.textContent = '—';
+    timer.classList.remove('low');
+    fill.classList.remove('low');
+    fill.style.width = '0%';
     return;
   }
 
-  $('grading-round').textContent =
-    current.round.number;
+  const remaining = timerRemainingMs();
 
-  $('grading-question').textContent =
-    current.question.number;
-
-  $('grading-type').textContent =
-    String(current.question.type || 'normal').toUpperCase();
-
-  list.innerHTML = '';
-
-  const grading =
-    Array.isArray(sync.freeAnswerGrading)
-      ? sync.freeAnswerGrading
-      : [];
-
-  const byToken = new Map(
-    grading.map(item => [item.token, item])
-  );
-
-  const players = Array.isArray(sync.players)
-    ? sync.players
-    : [];
-
-  if (!players.length) {
-    list.innerHTML =
-      '<tr><td colspan="3" class="hint">NO TEAMS</td></tr>';
-
+  if (remaining === null) {
+    timer.textContent = '—';
     return;
   }
 
-  for (const player of players) {
-    const result = byToken.get(player.token);
+  timer.textContent = formatTimer(remaining);
 
-    const row = document.createElement('tr');
+  const isLow =
+    phase === 'recording' ||
+    remaining <= 10000;
 
-    const answer =
-      result && result.answer !== undefined
-        ? result.answer
-        : '';
+  timer.classList.toggle('low', isLow);
+  fill.classList.toggle('low', isLow);
 
-    const correct =
-      !!(result && result.correct);
+  const limit = Number(sync.freeAnswerPhaseLimit);
 
-    row.innerHTML = `
-      <td>${esc(player.nickname)}</td>
-      <td>
-        <button
-          class="answer-cell ${correct ? 'correct' : ''}"
-          ${result ? '' : 'disabled'}>
-          ${answer
-            ? esc(answer).replaceAll('\n', '<br>')
-            : '<span class="muted">EMPTY ANSWER</span>'}
-        </button>
-      </td>
-      <td class="score-cell">
-        ${correct ? '+1' : '0'}
-      </td>
-    `;
+  if (Number.isFinite(limit) && limit > 0) {
+    const percent = Math.max(
+      0,
+      Math.min(100, remaining / limit * 100)
+    );
 
-    const answerButton =
-      row.querySelector('.answer-cell');
-
-    if (result) {
-      answerButton.addEventListener('click', () => {
-        socket.emit('host:gradeFreeAnswer', {
-          questionIndex: current.index,
-          token: player.token
-        });
-      });
-    }
-
-    list.appendChild(row);
+    fill.style.width = `${percent}%`;
+  } else {
+    fill.style.width = '0%';
   }
 }
+
+
+if (timerInterval) {
+  clearInterval(timerInterval);
+}
+
+timerInterval = setInterval(updateAdminTimer, 100);
+
+
+/* -------------------------------------------------------------------------- */
+/* ROUND RESULTS                                                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The server snapshot contains answers for all questions.
+ *
+ * The renderer accepts either:
+ *   - an array of question result objects;
+ *   - an object keyed by question index.
+ *
+ * Each question result should contain:
+ *   questionIndex, roundNumber, questionNumber, answers / teams.
+ *
+ * Each answer should contain:
+ *   token, nickname, answer, correct.
+ */
+
+function getRoundResultsData() {
+  const data = sync?.freeAnswerAnswers;
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  if (data && typeof data === 'object') {
+    return Object.entries(data).map(([index, value]) => {
+      if (Array.isArray(value)) {
+        return {
+          questionIndex: Number(index),
+          answers: value
+        };
+      }
+
+      return Object.assign(
+        { questionIndex: Number(index) },
+        value
+      );
+    });
+  }
+
+  return [];
+}
+
+
+function flattenQuestions() {
+  const rounds = sync?.freeAnswerGame?.rounds || [];
+
+  const result = [];
+  let globalIndex = 0;
+
+  for (const round of rounds) {
+    for (const question of round.questions || []) {
+      result.push({
+        index: globalIndex,
+        roundNumber: round.number,
+        questionNumber: question.number,
+        type: question.type
+      });
+
+      globalIndex++;
+    }
+  }
+
+  return result;
+}
+
+
+function getSelectedRoundNumber() {
+  const select = $('results-round');
+
+  if (!select) return null;
+
+  const value = Number(select.value);
+
+  return Number.isFinite(value)
+    ? value
+    : null;
+}
+
+
+function populateResultsRoundSelect() {
+  const select = $('results-round');
+
+  if (!select || !sync) return;
+
+  const previous = select.value;
+  const rounds = sync.freeAnswerGame?.rounds || [];
+
+  select.innerHTML = '';
+
+  if (!rounds.length) {
+    const option = document.createElement('option');
+
+    option.value = '';
+    option.textContent = 'NO ROUNDS';
+
+    select.appendChild(option);
+    select.disabled = true;
+
+    return;
+  }
+
+  select.disabled = false;
+
+  rounds.forEach(round => {
+    const option = document.createElement('option');
+
+    option.value = String(round.number);
+    option.textContent = `ROUND ${round.number}`;
+
+    select.appendChild(option);
+  });
+
+  const stillExists = rounds.some(
+    round => String(round.number) === previous
+  );
+
+  if (stillExists) {
+    select.value = previous;
+  } else {
+    const current = currentQuestion();
+
+    select.value = String(
+      current?.round.number ?? rounds[0].number
+    );
+  }
+}
+
+
+function normalizeQuestionAnswers(questionResult) {
+  if (Array.isArray(questionResult.answers)) {
+    return questionResult.answers;
+  }
+
+  if (Array.isArray(questionResult.teams)) {
+    return questionResult.teams;
+  }
+
+  if (Array.isArray(questionResult.results)) {
+    return questionResult.results;
+  }
+
+  return [];
+}
+
+
+function findQuestionResult(questionIndex, results) {
+  return results.find(item => {
+    return Number(item.questionIndex) === Number(questionIndex);
+  });
+}
+
+
+function answerForToken(questionResult, token) {
+  if (!questionResult) return null;
+
+  const answers = normalizeQuestionAnswers(questionResult);
+
+  return answers.find(item => item.token === token) || null;
+}
+
+
+function renderRoundResults() {
+  if (!sync) return;
+
+  const head = $('round-results-head');
+  const body = $('round-results-body');
+
+  if (!head || !body) return;
+
+  populateResultsRoundSelect();
+
+  const roundNumber = getSelectedRoundNumber();
+
+  const rounds = sync.freeAnswerGame?.rounds || [];
+
+  const round = rounds.find(
+    item => Number(item.number) === roundNumber
+  );
+
+  if (!round) {
+    head.innerHTML = '';
+    body.innerHTML =
+      '<tr><td class="empty-cell">NO ROUND SELECTED</td></tr>';
+
+    return;
+  }
+
+  const questions = flattenQuestions()
+    .filter(question => {
+      return Number(question.roundNumber) === roundNumber;
+    });
+
+  const players = Array.isArray(sync.players)
+    ? [...sync.players]
+    : [];
+
+  const results = getRoundResultsData();
+
+  head.innerHTML = '';
+
+  const headerRow = document.createElement('tr');
+
+  const teamHeader = document.createElement('th');
+  teamHeader.textContent = 'TEAM';
+  headerRow.appendChild(teamHeader);
+
+  questions.forEach(question => {
+    const th = document.createElement('th');
+
+    th.textContent =
+      `Q${question.questionNumber} · ${String(question.type || 'normal').toUpperCase()}`;
+
+    headerRow.appendChild(th);
+  });
+
+  head.appendChild(headerRow);
+
+  body.innerHTML = '';
+
+  if (!players.length) {
+    body.innerHTML =
+      `<tr><td colspan="${questions.length + 1}" class="empty-cell">NO TEAMS</td></tr>`;
+
+    return;
+  }
+
+  if (!questions.length) {
+    body.innerHTML =
+      '<tr><td class="empty-cell">NO QUESTIONS IN THIS ROUND</td></tr>';
+
+    return;
+  }
+
+  players.sort((a, b) => {
+    return String(a.nickname)
+      .localeCompare(String(b.nickname));
+  });
+
+  for (const player of players) {
+    const row = document.createElement('tr');
+
+    const teamCell = document.createElement('td');
+
+    teamCell.className = 'team-cell';
+    teamCell.textContent = player.nickname;
+
+    row.appendChild(teamCell);
+
+    for (const question of questions) {
+      const td = document.createElement('td');
+
+      const questionResult = findQuestionResult(
+        question.index,
+        results
+      );
+
+      const answerResult = answerForToken(
+        questionResult,
+        player.token
+      );
+
+      const answer =
+        answerResult?.answer ??
+        answerResult?.draft ??
+        '';
+
+      const correct =
+        !!answerResult?.correct;
+
+      td.className = 'round-answer-cell';
+
+      if (correct) {
+        td.classList.add('correct');
+      }
+
+      if (!answerResult || !String(answer).trim()) {
+        td.classList.add('empty');
+        td.textContent = '—';
+      } else {
+        td.textContent = String(answer);
+        td.title = correct
+          ? 'CORRECT · CLICK TO REMOVE +1'
+          : 'CLICK TO AWARD +1';
+      }
+
+      if (answerResult) {
+        td.addEventListener('click', () => {
+          socket.emit('host:gradeFreeAnswer', {
+            questionIndex: question.index,
+            token: player.token
+          });
+        });
+      }
+
+      row.appendChild(td);
+    }
+
+    body.appendChild(row);
+  }
+}
+
+
+$('results-round')?.addEventListener('change', () => {
+  renderRoundResults();
+});
 
 
 /* -------------------------------------------------------------------------- */
@@ -948,6 +1247,8 @@ function renderSettings() {
 
 function buildAccentSwatches() {
   const box = $('accent-swatches');
+
+  if (!box) return;
 
   box.innerHTML = '';
 

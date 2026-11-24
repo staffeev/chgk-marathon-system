@@ -189,6 +189,12 @@ const bus = {
     pushAdmins();
   },
 
+  // Called when an answer draft or grading result changes.
+  // pushAdmins() coalesces frequent updates into one sync per 150 ms.
+  adminChanged() {
+    pushAdmins();
+  },
+
   questionEnd(payload) {
     io.emit('questionEnd', payload);
     pushAdmins();
