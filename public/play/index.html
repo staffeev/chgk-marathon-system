@@ -1,85 +1,182 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#04080a">
-<title>TRIVIA</title>
-<link rel="stylesheet" href="/fonts/fonts.css">
-<link rel="stylesheet" href="/shared/theme.css">
-<link rel="stylesheet" href="/play/play.css">
-<script src="/shared/theme.js"></script>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+  >
+  <meta name="theme-color" content="#04080a">
+  <title>TRIVIA</title>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="stylesheet" href="/shared/theme.css">
+  <link rel="stylesheet" href="/play/play.css">
+  <script src="/shared/theme.js"></script>
 </head>
 <body>
-<main id="screen">
+  <main id="screen">
 
-  <section id="s-join" class="scr">
-    <div class="logo">TRIVIA</div>
-    <div class="join-label ui">JOIN THE ROOM</div>
-    <div id="kicked-msg" class="kicked ui" hidden></div>
-    <input id="in-pin" placeholder="GAME PIN" maxlength="6" inputmode="numeric" autocomplete="off">
-    <input id="in-nick" placeholder="NICKNAME" maxlength="20" autocomplete="off">
-    <label class="agree ui"><input type="checkbox" id="in-agree"> <span>I AGREE TO THE <a href="/play/terms.html" target="_blank" rel="noopener">TERMS OF USE</a>: NO OBJECTIONABLE CONTENT, NO ABUSIVE PLAYERS</span></label>
-    <button id="btn-join" disabled>JOIN ▸</button>
-    <div id="join-err" class="join-err ui" hidden></div>
-    <div id="join-foot" class="join-foot ui">PIN IS ON THE BIG SCREEN</div>
-  </section>
+    <section id="s-join" class="scr">
+      <div class="logo">TRIVIA</div>
+      <div class="join-label ui">JOIN THE ROOM</div>
+      <div id="kicked-msg" class="kicked ui" hidden></div>
 
-  <section id="s-lobby" class="scr center" hidden>
-    <div class="mini-label ui">YOU'RE IN</div>
-    <div id="lb-name" class="you-name"></div>
-    <div id="lb-count" class="soft-16"></div>
-    <div class="waiting">WAITING FOR HOST<span class="blink">_</span></div>
-    <a class="report-link ui" href="#" data-report="game">REPORT THIS GAME</a>
-  </section>
+      <input
+        id="in-pin"
+        placeholder="GAME PIN"
+        maxlength="6"
+        inputmode="numeric"
+        autocomplete="off"
+      >
 
-  <section id="s-wait" class="scr center" hidden>
-    <div class="hold-tight">HOLD TIGHT</div>
-    <div class="wait-copy">YOU'LL JUMP IN ON THE<br>NEXT QUESTION</div>
-    <div class="wait-muted">SCORES START THEN<span class="blink">_</span></div>
-  </section>
+      <input
+        id="in-nick"
+        placeholder="NICKNAME"
+        maxlength="20"
+        autocomplete="off"
+      >
 
-  <section id="s-question" class="scr" hidden>
-    <div class="q-head">
-      <span id="q-nick" class="q-nick"></span>
-      <span id="q-warning" class="q-warning" hidden>Осталось 10 секунд</span>
-      <span id="q-timer" class="q-timer"></span>
-    </div>
-    <div class="q-bar"><div id="q-bar-fill" class="q-bar-fill"></div></div>
-    <div id="q-text" class="q-text"></div>
-    <div id="q-opts" class="q-opts"></div>
-    <div id="q-status" class="q-status ui"></div>
-    <a class="report-link ui" href="#" data-report="question">REPORT QUESTION</a>
-  </section>
+      <label class="agree ui">
+        <input type="checkbox" id="in-agree">
+        <span>
+          I AGREE TO THE
+          <a
+            href="/play/terms.html"
+            target="_blank"
+            rel="noopener"
+          >TERMS OF USE</a>:
+          NO OBJECTIONABLE CONTENT, NO ABUSIVE PLAYERS
+        </span>
+      </label>
 
-  <section id="s-result" class="scr center" hidden>
-    <div id="r-title" class="r-title"></div>
-    <div id="r-pts" class="r-pts"></div>
-    <div id="r-total" class="r-total"></div>
-    <div id="r-rank" class="r-rank"></div>
-  </section>
+      <button id="btn-join" disabled>JOIN ▸</button>
 
-  <section id="s-rank" class="scr center" hidden>
-    <div class="mini-label ui">YOUR POSITION</div>
-    <div id="k-rank" class="pos-rank"></div>
-    <div id="k-score" class="soft-18"></div>
-    <div class="waiting mt12">NEXT QUESTION SOON<span class="blink">_</span></div>
-  </section>
+      <div id="join-err" class="join-err ui" hidden></div>
+      <div id="join-foot" class="join-foot ui">
+        PIN IS ON THE BIG SCREEN
+      </div>
+    </section>
 
-  <section id="s-final" class="scr center" hidden>
-    <div class="mini-label ui">FINAL RESULT</div>
-    <div id="f-rank" class="final-rank"></div>
-    <div id="f-name" class="final-name"></div>
-    <div id="f-score" class="soft-17"></div>
-    <div class="waiting mt10">GG<span class="blink">_</span></div>
-  </section>
+    <section id="s-lobby" class="scr center" hidden>
+      <div class="mini-label ui">YOU'RE IN</div>
+      <div id="lb-name" class="you-name"></div>
+      <div id="lb-count" class="soft-16"></div>
 
-</main>
-<div id="link-lost" class="link-lost ui" hidden>CONNECTION LOST — RECONNECTING<span class="blink">_</span></div>
-<div class="scanlines"></div>
-<script src="/socket.io/socket.io.js"></script>
-<script src="/shared/common.js"></script>
-<script src="/shared/sfx.js"></script>
-<script src="/play/play.js"></script>
+      <div class="waiting">
+        WAITING FOR HOST<span class="blink">_</span>
+      </div>
+
+      <a
+        class="report-link ui"
+        href="#"
+        data-report="game"
+      >REPORT THIS GAME</a>
+    </section>
+
+    <section id="s-wait" class="scr center" hidden>
+      <div class="hold-tight">HOLD TIGHT</div>
+      <div class="wait-copy">
+        YOU'LL JUMP IN ON THE<br>
+        NEXT QUESTION
+      </div>
+      <div class="wait-muted">
+        SCORES START THEN<span class="blink">_</span>
+      </div>
+    </section>
+
+    <section id="s-question" class="scr" hidden>
+      <div class="q-head">
+        <span id="q-nick" class="q-nick"></span>
+
+        <span
+          id="q-warning"
+          class="q-warning"
+          hidden
+        >Осталось 10 секунд</span>
+
+        <span id="q-timer" class="q-timer"></span>
+      </div>
+
+      <div class="q-bar">
+        <div id="q-bar-fill" class="q-bar-fill"></div>
+      </div>
+
+      <div id="q-text" class="q-text"></div>
+
+      <div id="q-phase" class="q-phase ui" hidden>
+        ЗАПИСЬ ОТВЕТА
+      </div>
+
+      <div id="q-answer-wrap" class="q-answer-wrap">
+        <textarea
+          id="q-answer"
+          class="q-answer"
+          placeholder="Введите ответ..."
+          maxlength="2000"
+          autocomplete="off"
+          autocapitalize="sentences"
+          spellcheck="false"
+        ></textarea>
+
+        <button
+          id="btn-submit-answer"
+          class="btn-submit-answer"
+          type="button"
+        >ОТПРАВИТЬ</button>
+      </div>
+
+      <div id="q-status" class="q-status ui"></div>
+
+      <a
+        class="report-link ui"
+        href="#"
+        data-report="question"
+      >REPORT QUESTION</a>
+    </section>
+
+    <section id="s-result" class="scr center" hidden>
+      <div id="r-title" class="r-title"></div>
+      <div id="r-pts" class="r-pts"></div>
+      <div id="r-total" class="r-total"></div>
+      <div id="r-rank" class="r-rank"></div>
+    </section>
+
+    <section id="s-rank" class="scr center" hidden>
+      <div class="mini-label ui">YOUR POSITION</div>
+      <div id="k-rank" class="pos-rank"></div>
+      <div id="k-score" class="soft-18"></div>
+
+      <div class="waiting mt12">
+        NEXT QUESTION SOON<span class="blink">_</span>
+      </div>
+    </section>
+
+    <section id="s-final" class="scr center" hidden>
+      <div class="mini-label ui">FINAL RESULT</div>
+      <div id="f-rank" class="final-rank"></div>
+      <div id="f-name" class="final-name"></div>
+      <div id="f-score" class="soft-17"></div>
+
+      <div class="waiting mt10">
+        GG<span class="blink">_</span>
+      </div>
+    </section>
+
+  </main>
+
+  <div
+    id="link-lost"
+    class="link-lost ui"
+    hidden
+  >
+    CONNECTION LOST — RECONNECTING<span class="blink">_</span>
+  </div>
+
+  <div class="scanlines"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/shared/common.js"></script>
+  <script src="/shared/sfx.js"></script>
+  <script src="/play/play.js"></script>
 </body>
 </html>

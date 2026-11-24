@@ -5,66 +5,207 @@
 
 const socket = io();
 
-const SCREENS = ['s-join', 's-lobby', 's-wait', 's-question', 's-result', 's-rank', 's-final'];
-function show(id) { SCREENS.forEach(s => { $(s).hidden = s !== id; }); }
+const SCREENS = [
+  's-join',
+  's-lobby',
+  's-wait',
+  's-question',
+  's-result',
+  's-rank',
+  's-final'
+];
+
+function show(id) {
+  SCREENS.forEach(s => {
+    $(s).hidden = s !== id;
+  });
+}
 
 const store = {
-  get token() { return localStorage.getItem('trivia_token') || ''; },
-  set token(v) { v ? localStorage.setItem('trivia_token', v) : localStorage.removeItem('trivia_token'); },
-  get nickDraft() { return localStorage.getItem('trivia_nick') || ''; },
-  set nickDraft(v) { localStorage.setItem('trivia_nick', v); },
-  get agreed() { return localStorage.getItem('trivia_terms') === '1'; },
-  set agreed(v) { v ? localStorage.setItem('trivia_terms', '1') : localStorage.removeItem('trivia_terms'); },
-  // A random id for this browser, so a host who blocks it can keep it out.
+  get token() {
+    return localStorage.getItem('trivia_token') || '';
+  },
+
+  set token(v) {
+    v
+      ? localStorage.setItem('trivia_token', v)
+      : localStorage.removeItem('trivia_token');
+  },
+
+  get nickDraft() {
+    return localStorage.getItem('trivia_nick') || '';
+  },
+
+  set nickDraft(v) {
+    localStorage.setItem('trivia_nick', v);
+  },
+
+  get agreed() {
+    return localStorage.getItem('trivia_terms') === '1';
+  },
+
+  set agreed(v) {
+    v
+      ? localStorage.setItem('trivia_terms', '1')
+      : localStorage.removeItem('trivia_terms');
+  },
+
   get device() {
     let id = localStorage.getItem('trivia_device');
+
     if (!id) {
-      id = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+      id = Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        b => b.toString(16).padStart(2, '0')
+      ).join('');
+
       localStorage.setItem('trivia_device', id);
     }
+
     return id;
   }
 };
 
-// Where reports go: the app's developer, by the player's own email.
 const REPORT_ADDRESS = 'report@local-trivia.com';
 
-const STATUS_LOCKED = 'ANSWER LOCKED ▸ WAITING FOR ROOM';
-const STATUS_OPEN = 'TAP AN ANSWER — FAST = MORE PTS';
+let me = {
+  nickname: '',
+  score: 0,
+  rank: null
+};
 
-let me = { nickname: '', score: 0, rank: null };
 let eligibleFrom = 0;
-let question = null;   // active questionStart payload
-let lockedIndex = null;
+let question = null;
 
 let freeAnswerLocked = false;
 let freeAnswerRecording = false;
+let freeAnswerPaused = false;
 let freeAnswerDraft = '';
+
+let recordingSyncTimer = null;
 
 const countdown = createCountdown(({ whole, fraction, low }) => {
   $('q-timer').textContent = 'T-' + pad(whole, 3);
   $('q-timer').classList.toggle('low', low);
 
-  const warning = $('q-warning');
-  if (warning) {
-    warning.hidden =
-      !low ||
-      !question ||
-      question.freeAnswer !== true ||
-      freeAnswerRecording;
-  }
+  $('q-warning').hidden =
+    !low ||
+    !question ||
+    freeAnswerRecording ||
+    freeAnswerPaused;
 
   const fill = $('q-bar-fill');
+
   fill.style.width = (100 * fraction).toFixed(1) + '%';
   fill.classList.toggle('low', low);
 });
 
-$('in-nick').value = store.nickDraft;
-$('in-nick').addEventListener('input', e => { store.nickDraft = e.target.value; });
+// ---- free answer helpers ----
 
-// A phone-hosted game's QR code links here with its PIN (`?pin=4821`), so
-// there's no PIN to go and find.
+function cancelRecordingSync() {
+  if (recordingSyncTimer !== null) {
+    clearTimeout(recordingSyncTimer);
+    recordingSyncTimer = null;
+  }
+}
+
+function syncFreeAnswerDraft() {
+  cancelRecordingSync();
+
+  if (
+    !question ||
+    !freeAnswerRecording ||
+    freeAnswerPaused
+  ) {
+    return;
+  }
+
+  const input = $('q-answer');
+
+  if (!input) return;
+
+  freeAnswerDraft = input.value;
+
+  socket.emit('submitFreeAnswer', {
+    answer: freeAnswerDraft
+  });
+}
+
+function scheduleRecordingSync() {
+  if (
+    !question ||
+    !freeAnswerRecording ||
+    freeAnswerPaused
+  ) {
+    return;
+  }
+
+  cancelRecordingSync();
+
+  // Avoid sending a socket event for every keystroke.
+  recordingSyncTimer = setTimeout(() => {
+    recordingSyncTimer = null;
+    syncFreeAnswerDraft();
+  }, 200);
+}
+
+function resetFreeAnswerState() {
+  cancelRecordingSync();
+
+  freeAnswerLocked = false;
+  freeAnswerRecording = false;
+  freeAnswerPaused = false;
+  freeAnswerDraft = '';
+}
+
+function phaseFromSnapshot(snap) {
+  return (
+    snap.question?.phase ||
+    snap.freeAnswerPhase ||
+    'active'
+  );
+}
+
+function startQuestionCountdown(payload = {}) {
+  if (payload.phase === 'paused') {
+    countdown.stop();
+    return;
+  }
+
+  const remainingMs = Number(payload.remainingMs);
+
+  if (
+    Number.isFinite(remainingMs) &&
+    remainingMs >= 0
+  ) {
+    countdown.start(remainingMs / 1000, 0);
+    return;
+  }
+
+  const timeLimit = Number(
+    payload.phaseTimeLimit ??
+    payload.timeLimit ??
+    question?.phaseTimeLimit ??
+    question?.timeLimit ??
+    60
+  );
+
+  const elapsedMs = Number(payload.elapsedMs || 0);
+
+  countdown.start(timeLimit, elapsedMs);
+}
+
+// ---- stored nickname ----
+
+$('in-nick').value = store.nickDraft;
+
+$('in-nick').addEventListener('input', e => {
+  store.nickDraft = e.target.value;
+});
+
+// A phone-hosted game's QR code links here with its PIN (?pin=4821).
 const linkedPin = new URLSearchParams(location.search).get('pin');
+
 if (linkedPin && /^\d{4,6}$/.test(linkedPin)) {
   $('in-pin').value = linkedPin;
   $('join-foot').hidden = true;
@@ -72,9 +213,9 @@ if (linkedPin && /^\d{4,6}$/.test(linkedPin)) {
 
 // ---- join ----
 
-// Nobody joins before agreeing to the Terms of Use.
 $('in-agree').checked = store.agreed;
 $('btn-join').disabled = !store.agreed;
+
 $('in-agree').addEventListener('change', e => {
   store.agreed = e.target.checked;
   $('btn-join').disabled = !e.target.checked;
@@ -82,34 +223,71 @@ $('in-agree').addEventListener('change', e => {
 
 $('btn-join').addEventListener('click', () => {
   if (!store.agreed) return;
+
   $('join-err').hidden = true;
-  socket.emit('join', { pin: $('in-pin').value.trim(), nickname: $('in-nick').value.trim(), device: store.device });
+
+  socket.emit('join', {
+    pin: $('in-pin').value.trim(),
+    nickname: $('in-nick').value.trim(),
+    device: store.device
+  });
+});
+
+[$('in-pin'), $('in-nick')].forEach(el => {
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      $('btn-join').click();
+    }
+  });
 });
 
 // ---- report ----
 
-// An email to the developer, written out for the player to send: what was
-// on screen, and where.
 function report(kind) {
-  const lines = ['Local Trivia report (browser player)', ''];
+  const lines = [
+    'Local Trivia report (browser player)',
+    ''
+  ];
+
   if (kind === 'question' && question) {
-    lines.push('Reported: a question' + (question.category ? ' (' + question.category + ')' : ''));
-    lines.push('Content:', '  ' + question.text);
-    question.options.forEach((text, i) => lines.push('  ' + 'ABCD'[i] + ': ' + text));
+    lines.push('Reported: a question');
+    lines.push('Round: ' + (question.roundNumber ?? '-'));
+    lines.push('Question: ' + (question.questionNumber ?? '-'));
   } else {
     lines.push('Reported: a game and its host');
   }
-  lines.push('Game: ' + location.host, 'Player: ' + (me.nickname || '-'), 'Reason: ', 'Details: ', '', 'Sent: ' + new Date().toISOString());
-  const subject = kind === 'question' ? 'Local Trivia report: question' : 'Local Trivia report: game host';
-  location.href = 'mailto:' + REPORT_ADDRESS + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(lines.join('\n'));
+
+  lines.push(
+    'Game: ' + location.host,
+    'Player: ' + (me.nickname || '-'),
+    'Reason: ',
+    'Details: ',
+    '',
+    'Sent: ' + new Date().toISOString()
+  );
+
+  const subject = kind === 'question'
+    ? 'Local Trivia report: question'
+    : 'Local Trivia report: game host';
+
+  location.href =
+    'mailto:' + REPORT_ADDRESS +
+    '?subject=' + encodeURIComponent(subject) +
+    '&body=' + encodeURIComponent(lines.join('\n'));
 }
-document.querySelectorAll('[data-report]').forEach(link =>
-  link.addEventListener('click', e => { e.preventDefault(); report(link.dataset.report); }));
-[$('in-pin'), $('in-nick')].forEach(el =>
-  el.addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-join').click(); }));
+
+document.querySelectorAll('[data-report]').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    report(link.dataset.report);
+  });
+});
+
+// ---- socket connection ----
 
 socket.on('joinError', err => {
   if (!err || !err.message) return;
+
   $('join-err').textContent = err.message;
   $('join-err').hidden = false;
 });
@@ -122,68 +300,116 @@ socket.on('joined', snap => {
 
 socket.on('connect', () => {
   $('link-lost').hidden = true;
-  if (store.token) socket.emit('resume', { token: store.token });
+
+  if (store.token) {
+    socket.emit('resume', {
+      token: store.token
+    });
+  }
 });
 
-// A dropped link says so, rather than leaving a stale screen up. Not when the
-// server let us go on purpose — that comes with its own message ('kicked').
 socket.on('disconnect', reason => {
-  if (reason !== 'io server disconnect') $('link-lost').hidden = false;
+  if (reason !== 'io server disconnect') {
+    $('link-lost').hidden = false;
+  }
+
+  // Do not keep a stale debounce timer across a disconnect.
+  cancelRecordingSync();
 });
 
-socket.on('resumed', snap => applySnapshot(snap));
+socket.on('resumed', snap => {
+  applySnapshot(snap);
+});
 
 socket.on('resumeFailed', () => {
   store.token = '';
   countdown.stop();
+  question = null;
+  resetFreeAnswerState();
   show('s-join');
 });
 
 socket.on('kicked', data => {
   store.token = '';
   countdown.stop();
-  $('kicked-msg').textContent = (data && data.message) || 'REMOVED BY OPERATOR';
+  question = null;
+  resetFreeAnswerState();
+
+  $('kicked-msg').textContent =
+    (data && data.message) || 'REMOVED BY OPERATOR';
+
   $('kicked-msg').hidden = false;
   show('s-join');
 });
 
+// ---- snapshots ----
+
 function applySnapshot(snap) {
-  me = { nickname: snap.nickname, score: snap.score || 0, rank: snap.rank || null };
+  me = {
+    nickname: snap.nickname,
+    score: snap.score || 0,
+    rank: snap.rank || null
+  };
+
   eligibleFrom = snap.eligibleFrom || 0;
-  if (snap.sound != null) SFX.setEnabled(!!snap.sound);
-  if (snap.accent) applyAccent(snap.accent);
+
+  if (snap.sound != null) {
+    SFX.setEnabled(!!snap.sound);
+  }
+
+  if (snap.accent) {
+    applyAccent(snap.accent);
+  }
 
   switch (snap.state) {
     case 'LOBBY':
+      question = null;
+      resetFreeAnswerState();
+      countdown.stop();
       renderLobby(snap.playerCount || 0);
       break;
+
     case 'QUESTION_ACTIVE':
-      if (!snap.question) return show('s-wait');
+      if (!snap.question) {
+        show('s-wait');
+        return;
+      }
 
       question = snap.question;
 
-      if (question.freeAnswer === true) {
-        freeAnswerLocked = !!snap.freeAnswer?.locked;
-        freeAnswerRecording = question.phase === 'recording';
-        freeAnswerDraft = snap.freeAnswer?.answer ?? '';
+      freeAnswerLocked = !!snap.freeAnswer?.locked;
+      freeAnswerDraft = snap.freeAnswer?.answer ?? '';
 
-        if (question.phase === 'paused') {
-          countdown.stop();
-        }
-      } else {
-        lockedIndex = snap.lockedIndex != null ? snap.lockedIndex : null;
-      }
+      const phase = phaseFromSnapshot(snap);
 
-      renderQuestion(snap.question.elapsedMs || 0);
+      freeAnswerRecording = phase === 'recording';
+      freeAnswerPaused = phase === 'paused';
+
+      question.phase = phase;
+
+      renderQuestion(snap.question);
       break;
+
     case 'REVEAL':
-      if (snap.lastResult) renderResult(snap.lastResult);
-      else show('s-wait');
+      countdown.stop();
+      resetFreeAnswerState();
+
+      if (snap.lastResult) {
+        renderResult(snap.lastResult);
+      } else {
+        show('s-wait');
+      }
       break;
+
     case 'LEADERBOARD':
+      countdown.stop();
+      resetFreeAnswerState();
       renderRank(me.rank, me.score);
       break;
+
     case 'PODIUM':
+      countdown.stop();
+      resetFreeAnswerState();
       renderFinal(me.rank, me.score);
       break;
   }
@@ -194,254 +420,286 @@ function applySnapshot(snap) {
 function renderLobby(count) {
   $('lb-name').textContent = me.nickname;
   $('lb-count').textContent = plural(count, 'PLAYER') + ' READY';
+
   show('s-lobby');
 }
 
 socket.on('playerCount', d => {
-  if (!$('s-lobby').hidden) $('lb-count').textContent = plural(d.count, 'PLAYER') + ' READY';
+  if (!$('s-lobby').hidden) {
+    $('lb-count').textContent =
+      plural(d.count, 'PLAYER') + ' READY';
+  }
 });
 
 socket.on('stateChange', d => {
   if (d.state === 'LOBBY' && store.token) {
-    lockedIndex = null;
+    question = null;
+    resetFreeAnswerState();
+
     countdown.stop();
     renderLobby(0);
-    socket.emit('resume', { token: store.token }); // refresh count + state
+
+    socket.emit('resume', {
+      token: store.token
+    });
   }
 });
 
-// ---- question ----
+// ---- free answer question ----
 
 socket.on('questionStart', payload => {
   if (!store.token) return;
-  if (eligibleFrom > payload.index) return show('s-wait');
 
-  question = payload;
-  lockedIndex = null;
-
-  freeAnswerLocked = false;
-  freeAnswerRecording = false;
-  freeAnswerDraft = '';
-
-  renderQuestion(payload.elapsedMs || 0);
-});
-
-// Longer questions step down a size so the answer buttons stay on screen
-// without scrolling. Thresholds are character counts of the question text.
-const SIZE_STEPS = [[45, 'len-s'], [100, 'len-m'], [180, 'len-l']];
-const sizeClass = text => (SIZE_STEPS.find(([max]) => text.length <= max) || [, 'len-xl'])[1];
-
-function renderQuestion(elapsedMs) {
-  $('q-nick').textContent = me.nickname;
-
-  const freeAnswer = question.freeAnswer === true ||
-    question.roundNumber != null;
-
-  if (freeAnswer) {
-    $('q-text').textContent =
-      `Раунд ${question.roundNumber} · Вопрос ${question.questionNumber}`;
-    $('q-text').className = 'q-text len-s';
-
-    const wrap = $('q-opts');
-    wrap.innerHTML = '';
-
-    const textarea = document.createElement('textarea');
-    textarea.id = 'free-answer-input';
-    textarea.className = 'free-answer-input';
-    textarea.placeholder = 'Введите ответ…';
-    textarea.value = freeAnswerDraft;
-    textarea.autocomplete = 'off';
-    textarea.spellcheck = false;
-
-    const button = document.createElement('button');
-    button.id = 'free-answer-submit';
-    button.className = 'q-opt free-answer-submit';
-    button.textContent = 'ОТПРАВИТЬ';
-    button.addEventListener('click', submitFreeAnswer);
-
-    wrap.appendChild(textarea);
-    wrap.appendChild(button);
-
-    updateFreeAnswerUI();
-
-    countdown.start(question.phaseTimeLimit, elapsedMs);
-    show('s-question');
+  if (eligibleFrom > payload.index) {
+    show('s-wait');
     return;
   }
 
-  function submitFreeAnswer() {
-    const input = $('free-answer-input');
-    if (!input || !question) return;
+  question = payload;
 
+  resetFreeAnswerState();
+
+  question.phase = payload.phase || 'active';
+
+  renderQuestion(payload);
+});
+
+function renderQuestion(payload = {}) {
+  if (!question) return;
+
+  $('q-nick').textContent = me.nickname;
+
+  $('q-text').textContent =
+    `Тур ${question.roundNumber} · Вопрос ${question.questionNumber}`;
+
+  $('q-text').className = 'q-text len-s';
+
+  $('q-phase').hidden = true;
+  $('q-warning').hidden = true;
+
+  const input = $('q-answer');
+  const button = $('btn-submit-answer');
+
+  input.value = freeAnswerDraft;
+
+  input.oninput = () => {
     freeAnswerDraft = input.value;
 
-    if (freeAnswerRecording) {
-      socket.emit('submitFreeAnswer', {
-        answer: freeAnswerDraft
-      });
-      return;
+    if (freeAnswerRecording && !freeAnswerPaused) {
+      scheduleRecordingSync();
     }
+  };
 
-    if (freeAnswerLocked) return;
+  // If the player leaves the field before the debounce fires,
+  // send the latest text immediately.
+  input.onblur = () => {
+    if (freeAnswerRecording && !freeAnswerPaused) {
+      syncFreeAnswerDraft();
+    }
+  };
 
-    freeAnswerLocked = true;
+  button.onclick = submitFreeAnswer;
 
-    socket.emit('submitFreeAnswer', {
-      answer: freeAnswerDraft
-    });
+  updateFreeAnswerUI();
 
-    updateFreeAnswerUI();
+  show('s-question');
+
+  if (freeAnswerPaused) {
+    countdown.stop();
+  } else {
+    startQuestionCountdown(payload);
+  }
+}
+
+function submitFreeAnswer() {
+  if (!question || freeAnswerPaused) return;
+
+  const input = $('q-answer');
+
+  if (!input || (freeAnswerLocked && !freeAnswerRecording)) {
+    return;
   }
 
-  function updateFreeAnswerUI() {
-    const input = $('free-answer-input');
-    const button = $('free-answer-submit');
+  cancelRecordingSync();
 
-    if (!input || !button) return;
+  freeAnswerDraft = input.value;
 
-    if (freeAnswerRecording) {
-      input.disabled = false;
-      button.disabled = false;
-      button.textContent = 'ОТПРАВИТЬ';
-      $('q-status').textContent = 'ЗАПИСЬ ОТВЕТА';
-      return;
-    }
+  socket.emit('submitFreeAnswer', {
+    answer: freeAnswerDraft
+  });
 
-    if (freeAnswerRecording) {
-      input.disabled = false;
-      button.disabled = false;
-      button.textContent = 'ОТПРАВИТЬ';
-      $('q-status').textContent = 'Запись ответа';
-      $('q-warning').hidden = true;
-      return;
-    }
+  if (!freeAnswerRecording) {
+    freeAnswerLocked = true;
+    SFX.play('blip');
+  }
 
+  updateFreeAnswerUI();
+}
+
+function updateFreeAnswerUI() {
+  const input = $('q-answer');
+  const button = $('btn-submit-answer');
+
+  if (!input || !button) return;
+
+  const phaseLabel = $('q-phase');
+  const status = $('q-status');
+
+  if (freeAnswerPaused) {
+    input.disabled = true;
+    button.disabled = true;
+
+    phaseLabel.hidden = false;
+    status.textContent = 'ПАУЗА';
+
+    $('q-warning').hidden = true;
+    return;
+  }
+
+  if (freeAnswerRecording) {
     input.disabled = false;
     button.disabled = false;
-    button.textContent = 'ОТПРАВИТЬ';
-    $('q-status').textContent = 'ВВЕДИТЕ ОТВЕТ';
+
+    phaseLabel.hidden = false;
+    status.textContent = 'ЗАПИСЬ ОТВЕТА';
+
+    $('q-warning').hidden = true;
+    return;
   }
 
-  $('q-text').textContent = question.text;
-  $('q-text').className = 'q-text ' + sizeClass(question.text);
+  phaseLabel.hidden = true;
 
-  const wrap = $('q-opts');
-  wrap.innerHTML = '';
-  question.options.forEach((text, i) => {
-    const b = document.createElement('button');
-    b.className = 'q-opt';
-    b.dataset.i = i;
-    b.innerHTML = optionLabel(i, text);
-    b.addEventListener('click', () => tap(i));
-    wrap.appendChild(b);
-  });
-  paintOptions();
+  if (freeAnswerLocked) {
+    input.disabled = true;
+    button.disabled = true;
 
-  $('q-status').textContent =
-    lockedIndex != null ? STATUS_LOCKED : STATUS_OPEN;
+    status.textContent = 'ОТВЕТ ЗАФИКСИРОВАН';
+    return;
+  }
 
-  countdown.start(question.timeLimit, elapsedMs);
-  show('s-question');
+  input.disabled = false;
+  button.disabled = false;
+
+  status.textContent = 'ВВЕДИТЕ ОТВЕТ';
 }
 
-// Dims the options the player didn't choose once an answer is locked in.
-function paintOptions() {
-  const locked = lockedIndex != null;
-  document.querySelectorAll('.q-opt').forEach(b => {
-    const i = Number(b.dataset.i);
-    const P = PAL[i];
-    const chosen = locked && lockedIndex === i;
-    b.style.border = `1px solid ${P.col}`;
-    b.style.background = `rgba(${P.rgb},${chosen ? '.28' : '.08'})`;
-    b.style.color = P.tint;
-    b.style.boxShadow = chosen ? `0 0 14px rgba(${P.rgb},.5)` : 'none';
-    b.style.opacity = locked && !chosen ? '.32' : '1';
-    b.style.cursor = locked ? 'default' : 'pointer';
-  });
-}
-
-function tap(i) {
-  if (lockedIndex != null || !question) return;
-  lockedIndex = i; // locks instantly; the server ack only confirms
-  paintOptions();
-  $('q-status').textContent = STATUS_LOCKED;
-  SFX.play('blip');
-  socket.emit('submitAnswer', { questionId: question.questionId, optionIndex: i });
-}
-
-socket.on('answerAck', () => { $('q-status').textContent = STATUS_LOCKED; });
+// ---- free answer phases ----
 
 socket.on('freeAnswerPhase', payload => {
-  if (!question || !question.roundNumber) return;
+  if (!question || !payload) return;
 
   if (payload.phase === 'paused') {
+    cancelRecordingSync();
+
+    freeAnswerPaused = true;
+    freeAnswerRecording = false;
+
+    question.phase = 'paused';
+
     countdown.stop();
-    $('q-status').textContent = 'ПАУЗА';
+    updateFreeAnswerUI();
+
     return;
   }
 
   if (payload.phase === 'active') {
+    cancelRecordingSync();
+
+    freeAnswerPaused = false;
     freeAnswerRecording = false;
 
-    if (payload.subQuestion) {
+    question.phase = 'active';
+
+    if (payload.subQuestion != null) {
       question.subQuestion = payload.subQuestion;
     }
 
-    countdown.start(
-      payload.timeLimit,
-      0
-    );
+    if (payload.timeLimit != null) {
+      question.phaseTimeLimit = payload.timeLimit;
+    }
+
+    if (payload.phaseTimeLimit != null) {
+      question.phaseTimeLimit = payload.phaseTimeLimit;
+    }
 
     updateFreeAnswerUI();
+    startQuestionCountdown(payload);
+
     return;
   }
 
   if (payload.phase === 'recording') {
+    cancelRecordingSync();
+
+    freeAnswerPaused = false;
     freeAnswerRecording = true;
     freeAnswerLocked = false;
 
-    countdown.start(10, 0);
+    question.phase = 'recording';
+
     updateFreeAnswerUI();
+    startQuestionCountdown({
+      ...payload,
+      timeLimit: payload.timeLimit ?? 10
+    });
   }
 });
 
-socket.on('questionEnd', () => countdown.stop());
+// The server confirms that the submitted answer was received.
+socket.on('answerAck', payload => {
+  if (freeAnswerRecording) {
+    $('q-status').textContent = 'ОТВЕТ ОТПРАВЛЕН';
+  } else if (freeAnswerLocked) {
+    $('q-status').textContent = 'ОТВЕТ ЗАФИКСИРОВАН';
+  }
+});
+
+socket.on('questionEnd', () => {
+  cancelRecordingSync();
+  countdown.stop();
+
+  $('q-answer').disabled = true;
+  $('btn-submit-answer').disabled = true;
+  $('q-warning').hidden = true;
+});
 
 // ---- reveal / leaderboard / podium ----
 
 socket.on('personalResult', r => {
   me.score = r.totalScore;
   me.rank = r.rank;
+
   renderResult(r);
 });
 
-const RESULT_STYLES = {
-  none: { text: 'NO ANSWER', cls: 'none' },
-  correct: { text: 'CORRECT!', cls: 'ok' },
-  wrong: { text: 'WRONG', cls: 'bad' }
-};
-
 function renderResult(r) {
-  const style = RESULT_STYLES[!r.answered ? 'none' : r.correct ? 'correct' : 'wrong'];
   const title = $('r-title');
-  title.textContent = style.text;
-  title.className = 'r-title ' + style.cls;
+
+  title.textContent = 'ОТВЕТ ПРИНЯТ';
+  title.className = 'r-title ok';
+
   $('r-pts').textContent = `+${fmt(r.points)} PTS`;
   $('r-total').textContent = `TOTAL ${fmt(r.totalScore)} PTS`;
   $('r-rank').textContent = `RANK #${r.rank || '—'}`;
+
   show('s-result');
 }
 
 socket.on('personalRank', d => {
   me.rank = d.rank;
   me.score = d.score;
-  if (d.phase === 'podium') renderFinal(d.rank, d.score);
-  else renderRank(d.rank, d.score);
+
+  if (d.phase === 'podium') {
+    renderFinal(d.rank, d.score);
+  } else {
+    renderRank(d.rank, d.score);
+  }
 });
 
 function renderRank(rank, score) {
   $('k-rank').textContent = '#' + (rank || '—');
   $('k-score').textContent = `${fmt(score)} PTS`;
+
   show('s-rank');
 }
 
@@ -449,14 +707,24 @@ function renderFinal(rank, score) {
   $('f-rank').textContent = '#' + (rank || '—');
   $('f-name').textContent = me.nickname;
   $('f-score').textContent = `${fmt(score)} PTS`;
+
   show('s-final');
 }
 
 socket.on('gameOver', () => {
-  if (store.token && $('s-final').hidden) renderFinal(me.rank, me.score);
+  if (store.token && $('s-final').hidden) {
+    renderFinal(me.rank, me.score);
+  }
 });
 
+// ---- presentation settings ----
+
 socket.on('settingsChanged', d => {
-  if (d.sound != null) SFX.setEnabled(!!d.sound);
-  if (d.accent) applyAccent(d.accent);
+  if (d.sound != null) {
+    SFX.setEnabled(!!d.sound);
+  }
+
+  if (d.accent) {
+    applyAccent(d.accent);
+  }
 });
